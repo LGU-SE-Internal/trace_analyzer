@@ -12,24 +12,22 @@ from threading import Thread
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-
-from rllm.engine.agent_execution_engine import AsyncAgentExecutionEngine
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor
+from verl.single_controller.ray import RayWorkerGroup
 from verl.trainer.ppo.core_algos import agg_loss
+from verl.trainer.ppo.metric_utils import compute_data_metrics, compute_timing_metrics
 from verl.trainer.ppo.ray_trainer import (
     RayPPOTrainer,
-    RayWorkerGroup,
     ResourcePoolManager,
-    Role,
-    WorkerType,
     compute_advantage,
-    compute_data_metrics,
     compute_response_mask,
-    compute_timing_metrics,
-    marked_timer,
-    reduce_metrics,
 )
+from verl.trainer.ppo.utils import Role, WorkerType
+from verl.utils.debug import marked_timer
+from verl.utils.metric import reduce_metrics
+
+from rllm.engine.agent_execution_engine import AsyncAgentExecutionEngine
 
 
 class AgentPPOTrainer(RayPPOTrainer):
@@ -39,7 +37,7 @@ class AgentPPOTrainer(RayPPOTrainer):
         tokenizer,
         role_worker_mapping: dict[Role, WorkerType],
         resource_pool_manager: ResourcePoolManager,
-        ray_worker_group_cls: RayWorkerGroup = RayWorkerGroup,
+        ray_worker_group_cls: type[RayWorkerGroup] = RayWorkerGroup,
         reward_fn=None,
         val_reward_fn=None,
         env_class=None,
@@ -93,6 +91,7 @@ class AgentPPOTrainer(RayPPOTrainer):
         """
         Initialize environment depending on env_class with the necessary extra_info, also set uid of the batch.
         """
+        assert self.agent_class is not None and self.env_class is not None, "Agent and environment classes must be provided"
         env_args = batch.non_tensor_batch["extra_info"].tolist()
 
         full_agent_args = dict(self.config.rllm.agent.get("agent_args", {})) | self.agent_args
@@ -458,6 +457,7 @@ class AgentPPOTrainer(RayPPOTrainer):
         rewards_lst = []
         data_source_lst = []
         uid_lst = []
+        extra_info_all = []
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
             test_batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object)
@@ -489,9 +489,11 @@ class AgentPPOTrainer(RayPPOTrainer):
             rewards_lst.append(reward_tensor.sum(-1).cpu())
             data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
             uid_lst.append(test_batch.non_tensor_batch["uid"])
+            extra_info_all.extend(test_batch.non_tensor_batch.get("extra_info", ["{}"] * reward_tensor.shape[0]))
 
         reward_tensor = torch.cat(rewards_lst, dim=0)  # (batch_size,)
         data_sources = np.concatenate(data_source_lst, axis=0)
+        extra_info_lst = list(extra_info_all)
         # evaluate test_score based on data source
         data_source_reward = {}
 
@@ -528,6 +530,35 @@ class AgentPPOTrainer(RayPPOTrainer):
             for uid, pass_score in pass_rates.items():
                 pass_k_lst.append(pass_score >= 1)  # assuming 1 means passed
             metric_dict[f"val/test_score/pass@k/{data_source}"] = np.mean(pass_k_lst)
+
+        # Save per-instance validation results to JSONL for downstream reporting
+        try:
+            n_val_samples = self.config.actor_rollout_ref.rollout.val_kwargs.n
+            results_dir = os.path.join(self.config.trainer.default_local_dir, "val_results")
+            os.makedirs(results_dir, exist_ok=True)
+            results_path = os.path.join(results_dir, f"step_{self.global_steps}.jsonl")
+            with open(results_path, "w") as f:
+                for i in range(reward_tensor.shape[0]):
+                    sample_idx = i % n_val_samples
+                    record = {
+                        "uid": str(uid_tensor[i]),
+                        "data_source": str(data_sources[i]),
+                        "reward": reward_tensor[i].item(),
+                        "sample_idx": sample_idx,
+                        "n_samples": n_val_samples,
+                    }
+                    # Extract instance_id from extra_info if available
+                    if extra_info_lst:
+                        try:
+                            extra = json.loads(extra_info_lst[i]) if isinstance(extra_info_lst[i], str) else extra_info_lst[i]
+                            record["instance_id"] = extra.get("instance_id", "")
+                            record["repo"] = extra.get("repo", "")
+                        except Exception:
+                            pass
+                    f.write(json.dumps(record) + "\n")
+            pprint(f"Saved per-instance val results to {results_path}")
+        except Exception as e:
+            pprint(f"Warning: failed to save val results: {e}")
 
         return metric_dict
 
@@ -752,9 +783,15 @@ class AgentPPOTrainer(RayPPOTrainer):
 
         def runner():
             async def consume():
-                async for item in self.agent_execution_engine.trajectory_generator(timing_raw=timing_raw, mode=mode, meta_info=meta_info):
-                    queue.put(item)
-                queue.put(None)  # sentinel to signal done
+                try:
+                    async for item in self.agent_execution_engine.trajectory_generator(timing_raw=timing_raw, mode=mode, meta_info=meta_info):
+                        queue.put(item)
+                except Exception as e:
+                    # Put exception in queue so main thread can re-raise it
+                    print("Error in trajectory_generator:", repr(e))
+                    queue.put(e)
+                finally:
+                    queue.put(None)  # sentinel to signal done, always executed
 
             asyncio.run(consume())
 
@@ -763,10 +800,15 @@ class AgentPPOTrainer(RayPPOTrainer):
             item = queue.get()
             if item is None:
                 break
+            if isinstance(item, Exception):
+                raise item  # re-raise exception from the generator thread
             yield item
 
     def _transform_agent_steps(self, steps: list[dict], uids: np.ndarray):
         from verl.utils.torch_functional import pad_sequence_to_length
+
+        overlong_filter = self.config.rllm.agent.get("overlong_filter", False)
+        overlong_reasons = {"TRUNCATION", "MAX_STEPS", "TIMEOUT"}
 
         all_prompts_list = []
         all_responses_list = []
@@ -776,6 +818,7 @@ class AgentPPOTrainer(RayPPOTrainer):
         all_steps_is_last_step_list = []
         all_steps_step_num = []  # total number of steps the trajectory this step belongs to have
         all_steps_step_ids = []
+        all_steps_masked_out = []  # whether this step should be masked out due to overlong filter
         training_rewards = []
         all_mc_returns = []  # Monte Carlo returns for each episode
         # the last step will have reward assigned and be used for advantage calculation
@@ -785,6 +828,10 @@ class AgentPPOTrainer(RayPPOTrainer):
             idx = episode["idx"]
             training_reward = episode["trajectory_reward"]
             mc_returns = episode["mc_returns"]
+            termination_reason = episode.get("termination_reason")
+
+            # Mask out overlong trajectories
+            masked_out = overlong_filter and termination_reason in overlong_reasons
 
             all_prompts_list.extend([torch.tensor(self.tokenizer.encode(s["prompt"], add_special_tokens=False), dtype=torch.long) for s in episode_steps])
             all_responses_list.extend([torch.tensor(self.tokenizer.encode(s["response"], add_special_tokens=False), dtype=torch.long) for s in episode_steps])
@@ -799,6 +846,7 @@ class AgentPPOTrainer(RayPPOTrainer):
 
             all_steps_step_num.extend([len(episode_steps) for _ in range(len(episode_steps))])
             all_steps_step_ids.extend([f"{uids[idx]}_step{i}" for i in range(len(episode_steps))])
+            all_steps_masked_out.extend([masked_out for _ in range(len(episode_steps))])
 
         # left pad prompts
         max_prompt_length = self.config.data.max_prompt_length
@@ -836,6 +884,10 @@ class AgentPPOTrainer(RayPPOTrainer):
 
         # loss mask
         traj_mask = attention_mask[:, max_prompt_length:]
+        # apply overlong filter by zeroing out masked trajectories
+        if overlong_filter:
+            overlong_mask = torch.tensor(all_steps_masked_out, dtype=torch.bool).unsqueeze(1)
+            traj_mask = traj_mask * (~overlong_mask).long()
 
         # position_ids
         position_ids = (torch.cumsum(attention_mask, dim=1) - 1) * attention_mask

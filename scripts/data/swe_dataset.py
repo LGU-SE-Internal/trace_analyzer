@@ -4,10 +4,10 @@ import os
 
 import pandas as pd
 from datasets import load_dataset
+from verl.utils.hdfs_io import copy, makedirs
 
 import rllm
 from rllm.agents.system_prompts import SWE_SYSTEM_PROMPT, SWE_USER_PROMPT
-from verl.utils.hdfs_io import copy, makedirs
 
 # Get the directory for rLLM repo (rllm.__file__)
 RLLM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(rllm.__file__)))
@@ -19,6 +19,7 @@ SWE_DATASETS = [
     # "R2E-Gym/SWE-Bench-Lite",
     "R2E-Gym/SWE-Bench-Verified",
     # "r2e-edits/SweSmith-RL-Dataset",
+    "R2E-Gym/R2EGym-SFT-Trajectories"
 ]
 
 
@@ -73,6 +74,14 @@ def main():
             continue
 
         print(f"Using '{split_name}' split for {dataset_name}")
+
+        # SFT trajectory data: save raw without reformatting
+        if "trajectories" in dataset_name.lower():
+            df = split_data.to_pandas()
+            output_filepath = os.path.join(local_dir, f"{output_name_base}.parquet")
+            df.to_parquet(output_filepath)
+            print(f"Saved {len(df)} SFT records from '{split_name}' split to {output_filepath} (no reformat)")
+            continue
 
         # Process the data from the identified split
         processed_data = [process_fn(row) for row in split_data]
