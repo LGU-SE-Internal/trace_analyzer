@@ -372,6 +372,20 @@ wheels = [
 ]
 
 [[package]]
+name = "arl-env"
+version = "0.2.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/24/b8/264735ee8e2c48f3d82afd7cac61b2315181da00573b2b839991de44b271/arl_env-0.2.3.tar.gz", hash = "sha256:5acbd8770a9b21658b810f76c56e92cf98e9d89ccacf2c839607f2592df43c78", size = 15275, upload-time = "2026-02-18T08:04:49.223Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/78/9e/c177c965c37fe83d8eea9132df0c2e6a294c20461a9b929c3bddcfeb5860/arl_env-0.2.3-py3-none-any.whl", hash = "sha256:629d0be36e9d3e7c4019a392d056be6d548905a0e64586c461b2a6e648ae0cd0", size = 16925, upload-time = "2026-02-18T08:04:50.371Z" },
+]
+
+[[package]]
 name = "asgiref"
 version = "3.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -7369,6 +7383,7 @@ version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "antlr4-python3-runtime" },
+    { name = "arl-env" },
     { name = "asgiref" },
     { name = "datasets" },
     { name = "eval-protocol" },
@@ -7465,6 +7480,7 @@ web = [
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'sdk'" },
     { name = "antlr4-python3-runtime", specifier = "==4.9.3" },
+    { name = "arl-env" },
     { name = "asgiref", specifier = ">=3.7.0" },
     { name = "asgiref", marker = "extra == 'sdk'" },
     { name = "browsergym", marker = "extra == 'web'" },
