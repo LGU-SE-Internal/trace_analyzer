@@ -102,6 +102,7 @@ class SWEEnv(BaseEnv):
         pool_ref: str | None = None,
         verbose: bool = False,
         scaffold: str = "r2egym",
+        normalize_pytest: bool = False,
     ):
         if entry is not None:
             self.entry = entry
@@ -127,6 +128,7 @@ class SWEEnv(BaseEnv):
         self.total_steps = 0
         self.verbose = verbose
         self.scaffold = scaffold
+        self.normalize_pytest = normalize_pytest
         self._cmd_counter = 0
         assert scaffold in ["r2egym", "sweagent"], (
             f"Invalid scaffold: {scaffold}, must be one of ['r2egym', 'sweagent']"
@@ -253,6 +255,21 @@ class SWEEnv(BaseEnv):
             self._copy_to_sandbox(tool_file, container_path)
             self._run(f"chmod +x {container_path}")
 
+    def _patch_pytest_args(self):
+        """Patch pytest arguments in the test script for standardized output.
+
+        Ensures -rA (show all test result short info) and --tb=short
+        (short traceback) are present on pytest command lines.
+        Non-pytest test runners (e.g. Django runtests.py) are left untouched.
+        """
+        script_path = "/run_tests.sh" if self.swebench_verified else f"{self.alt_path}/run_tests.sh"
+        # 1. Replace any existing --tb=<value> with --tb=short
+        self._run(f"sed -i 's/--tb=[^ ]*/--tb=short/g' {script_path}")
+        # 2. For pytest lines without --tb, add --tb=short after 'pytest'
+        self._run(f"sed -i '/pytest/{{/--tb=/!s/pytest/pytest --tb=short/}}' {script_path}")
+        # 3. For pytest lines without -rA, add -rA after 'pytest'
+        self._run(f"sed -i '/pytest/{{/-rA/!s/pytest/pytest -rA/}}' {script_path}")
+
     def _get_task_instruction(self) -> str:
         """Extract problem statement from dataset entry."""
         try:
@@ -287,6 +304,8 @@ class SWEEnv(BaseEnv):
             R2EGYM_TOOL_FILES if self.scaffold == "r2egym" else SWEAGENT_TOOL_FILES
         )
         self._provision_tools(tool_files)
+        if self.normalize_pytest:
+            self._patch_pytest_args()
         self.total_steps = 0
         self._cmd_counter = 0
         return self._get_task_instruction(), {}

@@ -20,10 +20,15 @@ Usage:
         --data data/swe/SWE_Bench_Verified.parquet \
         --n_samples 5 --temperature 1.0
 
-    # Using DatasetRegistry (from prepare_swe_data.py)
+    # Dry run: run harness on unmodified code, capture baseline test output
     python scripts/swe_eval_standalone.py \
-        --model /path/to/model \
-        --dataset_name SWE_Bench_Verified --dataset_split test
+        --dry_run --normalize_pytest \
+        --data data/swe/SWE_Bench_Verified.parquet
+
+    # Normalize pytest output (add -rA and --tb=short) during regular eval
+    python scripts/swe_eval_standalone.py \
+        --model /path/to/model --normalize_pytest \
+        --data data/swe/SWE_Bench_Verified.parquet
 """
 
 import argparse
@@ -34,13 +39,10 @@ import os
 import subprocess
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from transformers import AutoTokenizer
-
-from rllm.agents.swe_agent import SWEAgent
 from rllm.data.dataset import Dataset, DatasetRegistry
-from rllm.engine.agent_execution_engine import AgentExecutionEngine
 from rllm.environments.swe.swe import SWEEnv
 
 logger = logging.getLogger(__name__)
@@ -92,25 +94,43 @@ def repeat_tasks_for_pass_k(tasks: list[dict], n_samples: int) -> list[dict]:
     return repeated
 
 
-def save_results_jsonl(trajectories: list, output_path: str):
+def save_results_jsonl(results: list[dict], output_path: str):
     """Save results in swe_report.py-compatible JSONL format."""
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
     with open(output_path, "w") as f:
-        for traj in trajectories:
-            task = traj.task or {}
-            record = {
-                "uid": task.get("_uid", traj.uid),
-                "data_source": task.get("data_source", "swe"),
-                "reward": float(traj.reward) if traj.reward is not None else 0.0,
-                "sample_idx": task.get("_sample_idx", 0),
-                "n_samples": task.get("_n_samples", 1),
-                "instance_id": task.get("instance_id", ""),
-                "repo": task.get("repo", task.get("repo_name", "")),
-            }
+        for record in results:
             f.write(json.dumps(record) + "\n")
 
-    print(f"Saved {len(trajectories)} results to {output_path}")
+    print(f"Saved {len(results)} results to {output_path}")
+
+
+def save_test_outputs(test_outputs: dict[str, str], output_dir: str):
+    """Save per-instance raw test outputs for analysis."""
+    outputs_dir = os.path.join(output_dir, "test_outputs")
+    os.makedirs(outputs_dir, exist_ok=True)
+    for instance_id, output in test_outputs.items():
+        safe_name = instance_id.replace("/", "__")
+        with open(os.path.join(outputs_dir, f"{safe_name}.txt"), "w") as f:
+            f.write(output)
+    print(f"Saved {len(test_outputs)} test output files to {outputs_dir}")
+
+
+def results_from_trajectories(trajectories: list) -> list[dict]:
+    """Convert Trajectory objects to swe_report.py-compatible dicts."""
+    records = []
+    for traj in trajectories:
+        task = traj.task or {}
+        records.append({
+            "uid": task.get("_uid", traj.uid),
+            "data_source": task.get("data_source", "swe"),
+            "reward": float(traj.reward) if traj.reward is not None else 0.0,
+            "sample_idx": task.get("_sample_idx", 0),
+            "n_samples": task.get("_n_samples", 1),
+            "instance_id": task.get("instance_id", ""),
+            "repo": task.get("repo", task.get("repo_name", "")),
+        })
+    return records
 
 
 def run_report(output_path: str):
@@ -124,64 +144,91 @@ def run_report(output_path: str):
         print(f"Warning: report script not found at {report_script}")
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Standalone SWE-Bench Evaluation")
+# =========================================================================
+# Dry-run mode: run harness on unmodified code, no model needed
+# =========================================================================
 
-    # Data source (choose one)
-    data_group = parser.add_argument_group("data source")
-    data_group.add_argument("--data", type=str, default=None, help="Path to parquet/json/jsonl data file")
-    data_group.add_argument("--dataset_name", type=str, default=None, help="DatasetRegistry name (e.g., SWE_Bench_Verified)")
-    data_group.add_argument("--dataset_split", type=str, default="test", help="DatasetRegistry split (default: test)")
+async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output_dir: str):
+    """Run SWE-bench harness on unmodified code to capture baseline test outputs.
 
-    # Model / inference
-    model_group = parser.add_argument_group("model")
-    model_group.add_argument("--model", type=str, required=True, help="Model name or path (for tokenizer + API model name)")
-    model_group.add_argument("--base_url", type=str, default="http://localhost:8000/v1", help="vLLM / OpenAI-compatible API base URL")
-    model_group.add_argument("--api_key", type=str, default="EMPTY", help="API key (default: EMPTY)")
+    No agent, no model — just reset the sandbox and run tests.
+    """
+    from rllm.environments.swe.reward import run_tests_with_output
 
-    # Sampling
-    sample_group = parser.add_argument_group("sampling")
-    sample_group.add_argument("--n_samples", type=int, default=1, help="Number of samples per task for pass@k (default: 1)")
-    sample_group.add_argument("--temperature", type=float, default=None, help="Sampling temperature (default: 0 for n=1, 1.0 for n>1)")
+    semaphore = asyncio.Semaphore(n_parallel)
+    executor = ThreadPoolExecutor(max_workers=n_parallel)
+    loop = asyncio.get_event_loop()
 
-    # Agent / Env
-    agent_group = parser.add_argument_group("agent/env")
-    agent_group.add_argument("--scaffold", type=str, default="r2egym", choices=["r2egym", "sweagent"], help="Scaffold type (default: r2egym)")
-    agent_group.add_argument("--max_steps", type=int, default=100, help="Max agent steps per task (default: 100)")
-    agent_group.add_argument("--max_prompt_length", type=int, default=131072, help="Max prompt length in tokens (default: 131072)")
-    agent_group.add_argument("--max_response_length", type=int, default=32768, help="Max response length in tokens (default: 32768)")
-    agent_group.add_argument("--step_timeout", type=int, default=90, help="Per-action sandbox timeout in seconds (default: 90)")
-    agent_group.add_argument("--reward_timeout", type=int, default=300, help="Reward computation timeout in seconds (default: 300)")
-    agent_group.add_argument("--trajectory_timeout", type=int, default=1200, help="Total trajectory wall-time timeout in seconds (default: 1200)")
+    completed = 0
+    total = len(tasks)
+    results = []
+    test_outputs = {}
 
-    # Concurrency
-    parser.add_argument("--n_parallel", type=int, default=48, help="Max concurrent agent-env trajectories (default: 48)")
-    parser.add_argument("--retry_limit", type=int, default=3, help="Retries per failed trajectory (default: 3)")
+    def _run_single_task(task):
+        """Synchronous: create env, reset, run tests, close."""
+        env = SWEEnv.from_dict({**task, **env_args})
+        try:
+            env.reset()
+            reward, raw_output = run_tests_with_output(
+                session=env.session,
+                ds=env.entry,
+                repo_path=env.repo_path,
+                alt_path=env.alt_path,
+                timeout=env.reward_timeout,
+            )
+            return reward, raw_output
+        finally:
+            env.close()
 
-    # Output
-    parser.add_argument("--output", type=str, default=None, help="Output JSONL path (default: auto-generated)")
-    parser.add_argument("--output_dir", type=str, default="eval_results", help="Output directory (default: eval_results)")
+    async def sem_wrapper(idx, task):
+        nonlocal completed
+        async with semaphore:
+            try:
+                reward, raw_output = await loop.run_in_executor(executor, _run_single_task, task)
+            except Exception as e:
+                logger.error(f"Task {idx} ({task.get('instance_id', '?')}) failed: {e}")
+                reward, raw_output = 0.0, f"ERROR: {e}"
 
-    return parser.parse_args()
+            completed += 1
+            instance_id = task.get("instance_id", f"task_{idx}")
+            status = "PASS" if reward >= 1.0 else "FAIL"
+            print(f"[{completed}/{total}] {instance_id}: {status}")
+
+            record = {
+                "uid": task.get("_uid", str(uuid.uuid4())),
+                "data_source": task.get("data_source", "swe"),
+                "reward": float(reward),
+                "sample_idx": task.get("_sample_idx", 0),
+                "n_samples": task.get("_n_samples", 1),
+                "instance_id": instance_id,
+                "repo": task.get("repo", task.get("repo_name", "")),
+            }
+            return record, instance_id, raw_output
+
+    all_results = await asyncio.gather(*[sem_wrapper(i, t) for i, t in enumerate(tasks)])
+
+    for record, instance_id, raw_output in all_results:
+        results.append(record)
+        test_outputs[instance_id] = raw_output
+
+    executor.shutdown(wait=False)
+    return results, test_outputs
 
 
-def main():
-    args = parse_args()
+# =========================================================================
+# Regular eval mode: agent + environment interaction
+# =========================================================================
 
-    # Resolve temperature
-    if args.temperature is None:
-        args.temperature = 1.0 if args.n_samples > 1 else 0.0
+def run_agent_eval(args, tasks):
+    """Run agentic evaluation using AgentExecutionEngine."""
+    from transformers import AutoTokenizer
 
-    # Load tokenizer
+    from rllm.agents.swe_agent import SWEAgent
+    from rllm.engine.agent_execution_engine import AgentExecutionEngine
+
     print(f"Loading tokenizer: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
-    # Load and prepare tasks
-    base_tasks = load_tasks(args)
-    tasks = repeat_tasks_for_pass_k(base_tasks, args.n_samples)
-    print(f"Total trajectories to run: {len(tasks)} ({len(base_tasks)} tasks x {args.n_samples} samples)")
-
-    # Build engine
     engine = AgentExecutionEngine(
         agent_class=SWEAgent,
         env_class=SWEEnv,
@@ -190,6 +237,7 @@ def main():
             "scaffold": args.scaffold,
             "step_timeout": args.step_timeout,
             "reward_timeout": args.reward_timeout,
+            "normalize_pytest": args.normalize_pytest,
             "verbose": False,
         },
         engine_name="openai",
@@ -211,28 +259,135 @@ def main():
         overlong_filter=False,
     )
 
-    # Run evaluation
     print(f"Starting evaluation with {args.n_parallel} parallel agents...")
     print(f"  Model: {args.model}")
     print(f"  API: {args.base_url}")
     print(f"  Scaffold: {args.scaffold}")
     print(f"  Temperature: {args.temperature}")
     print(f"  Max steps: {args.max_steps}")
+    print(f"  Normalize pytest: {args.normalize_pytest}")
     print()
 
     trajectories = asyncio.run(engine.execute_tasks(tasks))
+    return results_from_trajectories(trajectories)
 
-    # Determine output path
-    if args.output:
-        output_path = args.output
+
+# =========================================================================
+# CLI
+# =========================================================================
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Standalone SWE-Bench Evaluation")
+
+    # Data source (choose one)
+    data_group = parser.add_argument_group("data source")
+    data_group.add_argument("--data", type=str, default=None, help="Path to parquet/json/jsonl data file")
+    data_group.add_argument("--dataset_name", type=str, default=None, help="DatasetRegistry name (e.g., SWE_Bench_Verified)")
+    data_group.add_argument("--dataset_split", type=str, default="test", help="DatasetRegistry split (default: test)")
+
+    # Model / inference (not required for dry_run)
+    model_group = parser.add_argument_group("model")
+    model_group.add_argument("--model", type=str, default=None, help="Model name or path (for tokenizer + API model name)")
+    model_group.add_argument("--base_url", type=str, default="http://localhost:8000/v1", help="vLLM / OpenAI-compatible API base URL")
+    model_group.add_argument("--api_key", type=str, default="EMPTY", help="API key (default: EMPTY)")
+
+    # Sampling
+    sample_group = parser.add_argument_group("sampling")
+    sample_group.add_argument("--n_samples", type=int, default=1, help="Number of samples per task for pass@k (default: 1)")
+    sample_group.add_argument("--temperature", type=float, default=None, help="Sampling temperature (default: 0 for n=1, 1.0 for n>1)")
+
+    # Agent / Env
+    agent_group = parser.add_argument_group("agent/env")
+    agent_group.add_argument("--scaffold", type=str, default="r2egym", choices=["r2egym", "sweagent"], help="Scaffold type (default: r2egym)")
+    agent_group.add_argument("--max_steps", type=int, default=100, help="Max agent steps per task (default: 100)")
+    agent_group.add_argument("--max_prompt_length", type=int, default=131072, help="Max prompt length in tokens (default: 131072)")
+    agent_group.add_argument("--max_response_length", type=int, default=32768, help="Max response length in tokens (default: 32768)")
+    agent_group.add_argument("--step_timeout", type=int, default=90, help="Per-action sandbox timeout in seconds (default: 90)")
+    agent_group.add_argument("--reward_timeout", type=int, default=300, help="Reward computation timeout in seconds (default: 300)")
+    agent_group.add_argument("--trajectory_timeout", type=int, default=1200, help="Total trajectory wall-time timeout in seconds (default: 1200)")
+
+    # Special modes
+    mode_group = parser.add_argument_group("special modes")
+    mode_group.add_argument("--dry_run", action="store_true", help="Run harness on unmodified code without any model. Captures baseline test output for analysis.")
+    mode_group.add_argument("--normalize_pytest", action="store_true", help="Standardize pytest args: ensure -rA and --tb=short are present in the test script.")
+
+    # Concurrency
+    parser.add_argument("--n_parallel", type=int, default=48, help="Max concurrent agent-env trajectories (default: 48)")
+    parser.add_argument("--retry_limit", type=int, default=3, help="Retries per failed trajectory (default: 3)")
+
+    # Output
+    parser.add_argument("--output", type=str, default=None, help="Output JSONL path (default: auto-generated)")
+    parser.add_argument("--output_dir", type=str, default="eval_results", help="Output directory (default: eval_results)")
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # Validate args
+    if not args.dry_run and not args.model:
+        print("Error: --model is required unless --dry_run is set", file=sys.stderr)
+        sys.exit(1)
+
+    # Resolve temperature
+    if args.temperature is None:
+        args.temperature = 1.0 if args.n_samples > 1 else 0.0
+
+    # Load and prepare tasks
+    base_tasks = load_tasks(args)
+
+    if args.dry_run:
+        # Dry run: no model, no agent, just harness on unmodified code
+        tasks = base_tasks
+        for task in tasks:
+            task["_uid"] = str(uuid.uuid4())
+            task["_sample_idx"] = 0
+            task["_n_samples"] = 1
+
+        env_args = {
+            "scaffold": args.scaffold,
+            "step_timeout": args.step_timeout,
+            "reward_timeout": args.reward_timeout,
+            "normalize_pytest": args.normalize_pytest,
+            "verbose": False,
+        }
+
+        output_dir = args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        print(f"DRY RUN: running harness on {len(tasks)} unmodified instances...")
+        print(f"  Normalize pytest: {args.normalize_pytest}")
+        print(f"  Parallel: {args.n_parallel}")
+        print()
+
+        results, test_outputs = asyncio.run(
+            run_dry_run(tasks, env_args, args.n_parallel, output_dir)
+        )
+
+        # Save results
+        output_path = args.output or os.path.join(output_dir, "dry_run.jsonl")
+        save_results_jsonl(results, output_path)
+        save_test_outputs(test_outputs, output_dir)
+        run_report(output_path)
+
     else:
-        model_tag = Path(args.model).name
-        sample_tag = f"n{args.n_samples}"
-        output_path = os.path.join(args.output_dir, f"{model_tag}_{sample_tag}.jsonl")
+        # Regular agent evaluation
+        tasks = repeat_tasks_for_pass_k(base_tasks, args.n_samples)
+        print(f"Total trajectories to run: {len(tasks)} ({len(base_tasks)} tasks x {args.n_samples} samples)")
 
-    # Save and report
-    save_results_jsonl(trajectories, output_path)
-    run_report(output_path)
+        results = run_agent_eval(args, tasks)
+
+        # Determine output path
+        if args.output:
+            output_path = args.output
+        else:
+            model_tag = Path(args.model).name
+            sample_tag = f"n{args.n_samples}"
+            output_path = os.path.join(args.output_dir, f"{model_tag}_{sample_tag}.jsonl")
+
+        save_results_jsonl(results, output_path)
+        run_report(output_path)
 
 
 if __name__ == "__main__":

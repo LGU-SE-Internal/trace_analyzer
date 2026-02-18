@@ -67,13 +67,28 @@ def calculate_reward(
     Returns:
         Reward value (0.0 or 1.0).
     """
+    reward, _ = run_tests_with_output(session, ds, repo_path, alt_path, timeout)
+    return reward
+
+
+def run_tests_with_output(
+    session, ds: dict, repo_path: str, alt_path: str, timeout: int = 300
+) -> tuple[float, str]:
+    """Run tests and return both reward and raw test output.
+
+    Same as calculate_reward but also returns the raw test execution output
+    for debugging and analysis.
+
+    Returns:
+        (reward, raw_output) tuple.
+    """
     image = ds.get("docker_image", ds.get("image_name", ""))
     swebench_verified = "swebench" in image
 
     if swebench_verified:
-        return _calculate_reward_swebench(session, ds, timeout=timeout)
+        return _calculate_reward_swebench_with_output(session, ds, timeout=timeout)
     else:
-        return _calculate_reward_r2e(session, ds, repo_path, alt_path, timeout=timeout)
+        return _calculate_reward_r2e_with_output(session, ds, repo_path, alt_path, timeout=timeout)
 
 
 def _run_in_session(session, cmd: str, workdir: str, timeout: int) -> tuple[str, str]:
@@ -116,6 +131,12 @@ def _run_tests(session, alt_path: str, repo_path: str, timeout: int) -> tuple[st
 
 def _calculate_reward_swebench(session, ds: dict, timeout: int = 300) -> float:
     """SWE-Bench Verified reward via swebench harness."""
+    reward, _ = _calculate_reward_swebench_with_output(session, ds, timeout)
+    return reward
+
+
+def _calculate_reward_swebench_with_output(session, ds: dict, timeout: int = 300) -> tuple[float, str]:
+    """SWE-Bench Verified reward via swebench harness, also returning raw output."""
     from swebench.harness.constants import (
         FAIL_TO_PASS,
         KEY_INSTANCE_ID,
@@ -131,7 +152,7 @@ def _calculate_reward_swebench(session, ds: dict, timeout: int = 300) -> float:
     out, _ = _run_in_session(session, "/run_tests.sh", "/testbed", timeout)
     eval_status_map, found = _get_logs_eval(test_spec, out)
     if not found:
-        return 0.0
+        return 0.0, out
 
     eval_ref = {
         KEY_INSTANCE_ID: test_spec.instance_id,
@@ -142,13 +163,21 @@ def _calculate_reward_swebench(session, ds: dict, timeout: int = 300) -> float:
         eval_status_map, eval_ref, eval_type=get_eval_type(test_spec)
     )
     success = get_resolution_status(report) == ResolvedStatus.FULL.value
-    return int(success)
+    return int(success), out
 
 
 def _calculate_reward_r2e(
     session, ds: dict, repo_path: str, alt_path: str, timeout: int = 300
 ) -> float:
     """R2E reward via test output comparison."""
+    reward, _ = _calculate_reward_r2e_with_output(session, ds, repo_path, alt_path, timeout)
+    return reward
+
+
+def _calculate_reward_r2e_with_output(
+    session, ds: dict, repo_path: str, alt_path: str, timeout: int = 300
+) -> tuple[float, str]:
+    """R2E reward via test output comparison, also returning raw output."""
     output, _ = _run_tests(session, alt_path, repo_path, timeout)
     parse = parse_log_pytest(output)
     parse = decolor_dict_keys(parse)
@@ -165,22 +194,22 @@ def _calculate_reward_r2e(
         expected: dict = json.loads(expected_json)
     except (json.JSONDecodeError, TypeError):
         logger.error("Failed to parse expected output JSON")
-        return 0.0
+        return 0.0, output
     expected = decolor_dict_keys(expected)
     parse = {k.split(" - ")[0]: parse[k] for k in sorted(parse.keys())}
     expected = {k.split(" - ")[0]: expected[k] for k in sorted(expected.keys())}
 
     if len(parse) != len(expected):
-        return 0.0
+        return 0.0, output
 
     for k in parse.keys():
         if not k:
             continue
         if k not in expected:
-            return 0.0
+            return 0.0, output
         if parse[k] != expected[k]:
-            return 0.0
-    return 1.0
+            return 0.0, output
+    return 1.0, output
 
 
 def _get_logs_eval(test_spec, content: str) -> tuple[dict[str, str], bool]:
