@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-Standalone SWE-Bench Evaluation Script
+Standalone SWE-Bench / R2E-Gym Evaluation Script
 
-Evaluates an agent on SWE-Bench tasks using AgentExecutionEngine directly,
-bypassing the PPO training pipeline entirely. No Ray, no verl, no FSDP needed —
-just a running vLLM (or OpenAI-compatible) inference server.
+Evaluates an agent on SWE-Bench or R2E-Gym tasks using AgentExecutionEngine
+directly, bypassing the PPO training pipeline entirely.  No Ray, no verl,
+no FSDP needed — just a running vLLM (or OpenAI-compatible) inference server.
 
 All samples are evaluated without any prompt-length filtering.
 
 Usage:
-    # Greedy eval (n=1) with local vLLM
+    # Greedy eval (n=1) with local vLLM — SWE-Bench Verified
     python scripts/swe_eval_standalone.py \
         --model /path/to/model \
         --data data/swe/SWE_Bench_Verified.parquet
+
+    # Greedy eval — R2E-Gym Subset
+    python scripts/swe_eval_standalone.py \
+        --model /path/to/model \
+        --data data/R2E-Gym/R2E-Gym-Subset-train.parquet
 
     # pass@5 with sampling
     python scripts/swe_eval_standalone.py \
@@ -20,15 +25,15 @@ Usage:
         --data data/swe/SWE_Bench_Verified.parquet \
         --n_samples 5 --temperature 1.0
 
-    # Dry run: run harness on unmodified code, capture baseline test output
+    # Dry run (SWE-Bench): harness on unmodified code + fault tracing
     python scripts/swe_eval_standalone.py \
         --dry_run --normalize_pytest \
         --data data/swe/SWE_Bench_Verified.parquet
 
-    # Normalize pytest output (add -rA and --tb=short) during regular eval
+    # Dry run (R2E-Gym): same interface, different dataset
     python scripts/swe_eval_standalone.py \
-        --model /path/to/model --normalize_pytest \
-        --data data/swe/SWE_Bench_Verified.parquet
+        --dry_run --normalize_pytest \
+        --data data/R2E-Gym/R2E-Gym-Subset-train.parquet
 """
 
 import argparse
@@ -44,12 +49,18 @@ from pathlib import Path
 
 from rllm.data.dataset import Dataset, DatasetRegistry
 from rllm.environments.swe.swe import SWEEnv
+from rllm.environments.swe.trace import normalize_task
 
 logger = logging.getLogger(__name__)
 
 
 def load_tasks(args) -> list[dict]:
-    """Load task dicts from parquet file or DatasetRegistry."""
+    """Load task dicts from parquet file or DatasetRegistry.
+
+    Applies ``normalize_task`` so that all dataset fields (``docker_image``,
+    ``instance_id``, ``patch``, …) are available as top-level keys regardless
+    of whether the source is SWE-Bench (verl-wrapped) or R2E-Gym (flat).
+    """
     if args.data:
         ds = Dataset.load_data(args.data)
         tasks = ds.get_data()
@@ -65,6 +76,17 @@ def load_tasks(args) -> list[dict]:
     else:
         print("Error: must specify --data or --dataset_name", file=sys.stderr)
         sys.exit(1)
+
+    # Normalise: flatten SWE-bench extra_info wrapper, synthesise instance_id
+    # for R2E, etc.  After this point every task has a consistent schema.
+    tasks = [normalize_task(t) for t in tasks]
+
+    # Ensure every task has an instance_id (R2E doesn't ship one natively)
+    for task in tasks:
+        if "instance_id" not in task or not task["instance_id"]:
+            repo = task.get("repo", task.get("repo_name", "unknown"))
+            commit = task.get("base_commit", task.get("commit_hash", ""))[:12]
+            task["instance_id"] = f"{repo}__{commit}"
 
     return tasks
 
@@ -116,6 +138,21 @@ def save_test_outputs(test_outputs: dict[str, str], output_dir: str):
     print(f"Saved {len(test_outputs)} test output files to {outputs_dir}")
 
 
+def save_fault_traces(traces_map: dict[str, list], output_dir: str):
+    """Save per-instance fault trace JSON files."""
+    traces_dir = os.path.join(output_dir, "fault_traces")
+    os.makedirs(traces_dir, exist_ok=True)
+    saved = 0
+    for instance_id, traces in traces_map.items():
+        if not traces:
+            continue
+        safe_name = instance_id.replace("/", "__")
+        with open(os.path.join(traces_dir, f"{safe_name}.json"), "w") as f:
+            json.dump(traces, f, indent=2)
+        saved += 1
+    print(f"Saved {saved} fault trace files to {traces_dir}")
+
+
 def results_from_trajectories(trajectories: list) -> list[dict]:
     """Convert Trajectory objects to swe_report.py-compatible dicts."""
     records = []
@@ -149,11 +186,18 @@ def run_report(output_path: str):
 # =========================================================================
 
 async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output_dir: str):
-    """Run SWE-bench harness on unmodified code to capture baseline test outputs.
+    """Run SWE-bench / R2E harness on unmodified code to capture baseline test outputs.
 
     No agent, no model — just reset the sandbox and run tests.
+    Works identically for both SWE-Bench Verified and R2E-Gym datasets.
     """
     from rllm.environments.swe.reward import run_tests_with_output
+    from rllm.environments.swe.trace import (
+        aggregate_traces,
+        extract_non_test_patch,
+        instrument_sandbox,
+        parse_fault_traces,
+    )
 
     semaphore = asyncio.Semaphore(n_parallel)
     executor = ThreadPoolExecutor(max_workers=n_parallel)
@@ -169,6 +213,16 @@ async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output
         env = SWEEnv.from_dict({**task, **env_args})
         try:
             env.reset()
+
+            # Instrument sandbox for fault tracing (works for both datasets)
+            patch_text = extract_non_test_patch(task)
+            modified_callables = []
+            if patch_text:
+                try:
+                    modified_callables = instrument_sandbox(env, patch_text)
+                except Exception as e:
+                    logger.warning(f"Fault trace instrumentation failed: {e}")
+
             reward, raw_output = run_tests_with_output(
                 session=env.session,
                 ds=env.entry,
@@ -176,7 +230,14 @@ async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output
                 alt_path=env.alt_path,
                 timeout=env.reward_timeout,
             )
-            return reward, raw_output
+
+            # Parse fault traces from output
+            fault_traces = []
+            if modified_callables:
+                traces = parse_fault_traces(raw_output, modified_callables, env.repo_path)
+                fault_traces = aggregate_traces(traces)
+
+            return reward, raw_output, fault_traces
         finally:
             env.close()
 
@@ -184,10 +245,10 @@ async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output
         nonlocal completed
         async with semaphore:
             try:
-                reward, raw_output = await loop.run_in_executor(executor, _run_single_task, task)
+                reward, raw_output, fault_traces = await loop.run_in_executor(executor, _run_single_task, task)
             except Exception as e:
                 logger.error(f"Task {idx} ({task.get('instance_id', '?')}) failed: {e}")
-                reward, raw_output = 0.0, f"ERROR: {e}"
+                reward, raw_output, fault_traces = 0.0, f"ERROR: {e}", []
 
             completed += 1
             instance_id = task.get("instance_id", f"task_{idx}")
@@ -203,16 +264,19 @@ async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output
                 "instance_id": instance_id,
                 "repo": task.get("repo", task.get("repo_name", "")),
             }
-            return record, instance_id, raw_output
+            return record, instance_id, raw_output, fault_traces
 
     all_results = await asyncio.gather(*[sem_wrapper(i, t) for i, t in enumerate(tasks)])
 
-    for record, instance_id, raw_output in all_results:
+    fault_traces_map = {}
+    for record, instance_id, raw_output, fault_traces in all_results:
         results.append(record)
         test_outputs[instance_id] = raw_output
+        if fault_traces:
+            fault_traces_map[instance_id] = fault_traces
 
     executor.shutdown(wait=False)
-    return results, test_outputs
+    return results, test_outputs, fault_traces_map
 
 
 # =========================================================================
@@ -277,7 +341,7 @@ def run_agent_eval(args, tasks):
 # =========================================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Standalone SWE-Bench Evaluation")
+    parser = argparse.ArgumentParser(description="Standalone SWE-Bench / R2E-Gym Evaluation")
 
     # Data source (choose one)
     data_group = parser.add_argument_group("data source")
@@ -361,7 +425,7 @@ def main():
         print(f"  Parallel: {args.n_parallel}")
         print()
 
-        results, test_outputs = asyncio.run(
+        results, test_outputs, fault_traces_map = asyncio.run(
             run_dry_run(tasks, env_args, args.n_parallel, output_dir)
         )
 
@@ -369,6 +433,8 @@ def main():
         output_path = args.output or os.path.join(output_dir, "dry_run.jsonl")
         save_results_jsonl(results, output_path)
         save_test_outputs(test_outputs, output_dir)
+        if fault_traces_map:
+            save_fault_traces(fault_traces_map, output_dir)
         run_report(output_path)
 
     else:
