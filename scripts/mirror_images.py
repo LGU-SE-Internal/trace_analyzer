@@ -111,12 +111,15 @@ def image_exists_local(full_image: str) -> bool:
 # Stage functions: each returns (image, success, msg)
 # ---------------------------------------------------------------------------
 
-def do_pull(image: str, src_registry: str, dry_run: bool = False) -> tuple[str, bool, str]:
+def do_pull(image: str, src_registry: str, dry_run: bool = False, skip_existing: bool = False) -> tuple[str, bool, str]:
     """Pull image from src_registry to local docker."""
     src = f"{src_registry}/{image}"
 
     if dry_run:
         return image, True, f"[dry-run] docker pull {src}"
+
+    if skip_existing and image_exists_local(src):
+        return image, True, "skipped (already exists locally)"
 
     r = docker_run(["docker", "pull", src], timeout=1200)
     if r.returncode != 0:
@@ -274,7 +277,7 @@ def main():
     # Build worker function per stage
     def _make_task(img: str):
         if args.stage == "pull":
-            return do_pull(img, args.src, args.dry_run)
+            return do_pull(img, args.src, args.dry_run, args.skip_existing)
         elif args.stage == "push":
             return do_push(img, args.src, args.dst, args.dry_run, args.skip_existing)
         else:
