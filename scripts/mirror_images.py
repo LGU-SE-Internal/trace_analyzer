@@ -236,30 +236,24 @@ def do_push(
 ) -> tuple[str, bool, str]:
     """Tag and push a local image to dst_registry, then clean up local copies."""
     dst_image = rewrite_namespace(image, dst_namespace) if dst_namespace else image
-
-    # Find local image regardless of which registry it was pulled from
-    if not dry_run:
-        src = find_local_image(image, [r for r in src_pool.registries])
-    else:
-        src = None
-
-    if dry_run:
-        src = src or f"{src_pool.registries[0]}/{image}"
-        dst = f"{dst_registry}/{dst_image}"
-        return image, True, f"[dry-run] docker tag {src} {dst} && docker push {dst} && docker rmi {src} {dst}"
-
-    if src is None:
-        return image, False, "local image not found (run with --stage pull first)"
-
     dst = f"{dst_registry}/{dst_image}"
 
-    # Skip if already in destination
+    if dry_run:
+        src = f"{src_pool.registries[0]}/{image}"
+        return image, True, f"[dry-run] docker tag {src} {dst} && docker push {dst} && docker rmi {src} {dst}"
+
+    # Check remote first — if dst already has it, skip regardless of local state
     if skip_existing:
         try:
             if image_exists_remote(dst):
                 return image, True, "skipped (already exists in destination)"
         except Exception:
             pass
+
+    # Find local image regardless of which registry it was pulled from
+    src = find_local_image(image, [r for r in src_pool.registries])
+    if src is None:
+        return image, False, "local image not found (run with --stage pull first)"
 
     # Tag
     r = docker_run(["docker", "tag", src, dst])
