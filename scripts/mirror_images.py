@@ -184,6 +184,21 @@ def _pull_from_registry(registry: str, image: str) -> tuple[bool, str]:
     return True, ""
 
 
+def rewrite_namespace(image: str, namespace: str) -> str:
+    """Replace the namespace (first path segment) of an image with `namespace`.
+
+    E.g. rewrite_namespace('namanjain12/numpy_final:abc', 'code')
+         -> 'code/numpy_final:abc'
+         rewrite_namespace('slimshetty/swebench-verified:tag', 'code')
+         -> 'code/swebench-verified:tag'
+    """
+    parts = image.split("/", 1)
+    if len(parts) == 2:
+        return f"{namespace}/{parts[1]}"
+    # No namespace in original (bare image like 'ubuntu:latest')
+    return f"{namespace}/{image}"
+
+
 # ---------------------------------------------------------------------------
 # Stage functions: each returns (image, success, msg)
 # ---------------------------------------------------------------------------
@@ -217,8 +232,11 @@ def do_pull(
 def do_push(
     image: str, src_pool: RegistryPool, dst_registry: str,
     dry_run: bool = False, skip_existing: bool = False,
+    dst_namespace: str | None = None,
 ) -> tuple[str, bool, str]:
     """Tag and push a local image to dst_registry, then clean up local copies."""
+    dst_image = rewrite_namespace(image, dst_namespace) if dst_namespace else image
+
     # Find local image regardless of which registry it was pulled from
     if not dry_run:
         src = find_local_image(image, [r for r in src_pool.registries])
@@ -227,13 +245,13 @@ def do_push(
 
     if dry_run:
         src = src or f"{src_pool.registries[0]}/{image}"
-        dst = f"{dst_registry}/{image}"
+        dst = f"{dst_registry}/{dst_image}"
         return image, True, f"[dry-run] docker tag {src} {dst} && docker push {dst} && docker rmi {src} {dst}"
 
     if src is None:
         return image, False, "local image not found (run with --stage pull first)"
 
-    dst = f"{dst_registry}/{image}"
+    dst = f"{dst_registry}/{dst_image}"
 
     # Skip if already in destination
     if skip_existing:
@@ -263,9 +281,11 @@ def do_push(
 def do_all(
     image: str, src_pool: RegistryPool, dst_registry: str,
     dry_run: bool = False, skip_existing: bool = False,
+    dst_namespace: str | None = None,
 ) -> tuple[str, bool, str]:
     """Pull + push + cleanup in one shot."""
-    dst = f"{dst_registry}/{image}"
+    dst_image = rewrite_namespace(image, dst_namespace) if dst_namespace else image
+    dst = f"{dst_registry}/{dst_image}"
 
     if dry_run:
         regs = ",".join(src_pool.registries)
@@ -341,7 +361,16 @@ def main():
             f"Example: mirror1.example.com,mirror2.example.com"
         ),
     )
-    parser.add_argument("--dst", type=str, default=DST_REGISTRY_DEFAULT, help=f"Destination registry (default: {DST_REGISTRY_DEFAULT}).")
+    parser.add_argument(
+        "--dst", type=str, 
+        default=DST_REGISTRY_DEFAULT, 
+        help=f"Destination registry (default: {DST_REGISTRY_DEFAULT}).")
+    parser.add_argument(
+        "--dst-namespace",
+        type=str,
+        default="code",
+        help="Replace the image namespace when pushing to dst (default: code). Set to empty string to keep original namespace.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing.")
     parser.add_argument("--workers", type=int, default=4, help="Number of parallel workers (default: 4).")
     parser.add_argument(
@@ -398,14 +427,17 @@ def main():
     }
     logger.info(stage_desc[args.stage])
 
+    # Resolve dst_namespace: empty string means keep original
+    dst_ns = args.dst_namespace if args.dst_namespace else None
+
     # Build worker function per stage
     def _make_task(img: str):
         if args.stage == "pull":
             return do_pull(img, src_pool, args.dry_run, args.skip_existing)
         elif args.stage == "push":
-            return do_push(img, src_pool, args.dst, args.dry_run, args.skip_existing)
+            return do_push(img, src_pool, args.dst, args.dry_run, args.skip_existing, dst_ns)
         else:
-            return do_all(img, src_pool, args.dst, args.dry_run, args.skip_existing)
+            return do_all(img, src_pool, args.dst, args.dry_run, args.skip_existing, dst_ns)
 
     # Execute
     succeeded, failed = 0, 0
