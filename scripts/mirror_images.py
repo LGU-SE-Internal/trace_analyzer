@@ -298,21 +298,27 @@ def do_all(
         except Exception:
             pass
 
-    # Pull with round-robin fallback
-    start_reg = src_pool.next()
-    pulled_reg = None
-    errors: list[str] = []
-    for reg in src_pool.iter_from(start_reg):
-        ok, err = _pull_from_registry(reg, image)
-        if ok:
-            pulled_reg = reg
-            break
-        errors.append(f"{reg}: {err}")
+    # Check if already pulled locally (avoid re-pulling on resume)
+    local = find_local_image(image, [r for r in src_pool.registries])
+    if local:
+        pulled_reg = None
+        src = local
+    else:
+        # Pull with round-robin fallback
+        start_reg = src_pool.next()
+        pulled_reg = None
+        errors: list[str] = []
+        for reg in src_pool.iter_from(start_reg):
+            ok, err = _pull_from_registry(reg, image)
+            if ok:
+                pulled_reg = reg
+                break
+            errors.append(f"{reg}: {err}")
 
-    if pulled_reg is None:
-        return image, False, "pull failed from all registries:\n  " + "\n  ".join(errors)
+        if pulled_reg is None:
+            return image, False, "pull failed from all registries:\n  " + "\n  ".join(errors)
 
-    src = f"{pulled_reg}/{image}"
+        src = f"{pulled_reg}/{image}"
 
     # Tag
     r = docker_run(["docker", "tag", src, dst])
@@ -330,7 +336,7 @@ def do_all(
     # Clean up
     docker_run(["docker", "rmi", src], timeout=60)
     docker_run(["docker", "rmi", dst], timeout=60)
-    return image, True, f"ok (pulled from {pulled_reg})"
+    return image, True, f"ok (from {pulled_reg or 'local cache'})"
 
 
 # ---------------------------------------------------------------------------
