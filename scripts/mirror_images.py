@@ -53,9 +53,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -149,6 +151,103 @@ def image_exists_local(full_image: str) -> bool:
     return result.returncode == 0
 
 
+class LocalImageCache:
+    """Thread-safe cache for local docker image list, with TTL-based refresh."""
+
+    def __init__(self, ttl: float = 30.0):
+        self._ttl = ttl
+        self._lock = threading.Lock()
+        self._images: set[str] = set()
+        self._last_refresh: float = 0
+
+    def _refresh(self) -> None:
+        r = docker_run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}", "--no-trunc"], timeout=30)
+        if r.returncode == 0:
+            self._images = {line.strip() for line in r.stdout.splitlines() if line.strip()}
+        self._last_refresh = time.monotonic()
+
+    def contains(self, image: str) -> str | None:
+        """Check if `image` (bare name) matches any local image. Returns full ref or None."""
+        with self._lock:
+            if time.monotonic() - self._last_refresh > self._ttl:
+                self._refresh()
+            for ref in self._images:
+                if ref == image or ref.endswith(f"/{image}"):
+                    return ref
+        return None
+
+    def add(self, full_ref: str) -> None:
+        """Notify cache that a new image was pulled."""
+        with self._lock:
+            self._images.add(full_ref)
+
+
+_local_cache = LocalImageCache()
+
+
+class DiskCleaner:
+    """Deferred image cleanup based on disk usage threshold.
+
+    Instead of deleting images immediately after push, images are tracked
+    in a queue. Cleanup only happens when disk usage exceeds the threshold,
+    at which point the oldest half of tracked images is removed.
+    This preserves shared Docker layers to minimize redundant pulls.
+    """
+
+    def __init__(self, threshold_pct: int = 90):
+        self._threshold = threshold_pct / 100.0
+        self._lock = threading.Lock()
+        self._pushed_srcs: list[str] = []  # src tags, oldest first (FIFO)
+        self._docker_root: str | None = None
+
+    def _get_docker_root(self) -> str:
+        if self._docker_root is None:
+            r = docker_run(["docker", "info", "--format", "{{.DockerRootDir}}"], timeout=15)
+            self._docker_root = r.stdout.strip() if (r.returncode == 0 and r.stdout.strip()) else "/"
+        return self._docker_root
+
+    def _disk_usage_pct(self) -> float:
+        usage = shutil.disk_usage(self._get_docker_root())
+        return usage.used / usage.total
+
+    def mark_pushed(self, src_ref: str, dst_ref: str) -> None:
+        """Record a successful push. Always remove dst tag (just an alias), keep src for layers."""
+        docker_run(["docker", "rmi", dst_ref], timeout=60)
+        with self._lock:
+            self._pushed_srcs.append(src_ref)
+
+    def maybe_cleanup(self) -> None:
+        """If disk usage exceeds threshold, remove oldest half of pushed src images."""
+        with self._lock:
+            if not self._pushed_srcs:
+                return
+            try:
+                pct = self._disk_usage_pct()
+            except OSError:
+                return
+            if pct < self._threshold:
+                return
+            n_remove = max(1, len(self._pushed_srcs) // 2)
+            to_remove = self._pushed_srcs[:n_remove]
+            self._pushed_srcs = self._pushed_srcs[n_remove:]
+
+        logger.info(f"Disk usage {pct:.0%} > {self._threshold:.0%}, cleaning {len(to_remove)} oldest images...")
+        for ref in to_remove:
+            docker_run(["docker", "rmi", ref], timeout=60)
+
+
+# Sentinel: no-op cleaner when disk management is disabled
+class _NullCleaner:
+    """Immediate cleanup (legacy behavior)."""
+
+    def mark_pushed(self, src_ref: str, dst_ref: str) -> None:
+        docker_run(["docker", "rmi", src_ref], timeout=60)
+        docker_run(["docker", "rmi", dst_ref], timeout=60)
+
+    def maybe_cleanup(self) -> None:
+        pass
+
+
 def find_local_image(image: str, registries: list[str] | None = None) -> str | None:
     """Find a local docker image matching `image`, regardless of registry prefix.
 
@@ -163,24 +262,20 @@ def find_local_image(image: str, registries: list[str] | None = None) -> str | N
             if image_exists_local(candidate):
                 return candidate
 
-    # Fallback: scan all local images for a suffix match
-    r = docker_run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}", "--no-trunc"], timeout=30)
-    if r.returncode != 0:
-        return None
-    for line in r.stdout.splitlines():
-        line = line.strip()
-        # exact match (no registry prefix) or ends with /image
-        if line == image or line.endswith(f"/{image}"):
-            return line
-    return None
+    # Fallback: check cached local image list
+    return _local_cache.contains(image)
 
 
-def _pull_from_registry(registry: str, image: str) -> tuple[bool, str]:
+def _pull_from_registry(registry: str, image: str, timeout: int = 120) -> tuple[bool, str]:
     """Try pulling image from a single registry. Returns (success, error_msg)."""
     src = f"{registry}/{image}"
-    r = docker_run(["docker", "pull", src], timeout=1200)
+    try:
+        r = docker_run(["docker", "pull", src], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"timeout after {timeout}s"
     if r.returncode != 0:
         return False, r.stderr.strip()
+    _local_cache.add(src)
     return True, ""
 
 
@@ -206,6 +301,7 @@ def rewrite_namespace(image: str, namespace: str) -> str:
 def do_pull(
     image: str, src_pool: RegistryPool,
     dry_run: bool = False, skip_existing: bool = False,
+    pull_timeout: int = 120,
 ) -> tuple[str, bool, str]:
     """Pull image from src registries (round-robin with fallback) to local docker."""
     if dry_run:
@@ -221,7 +317,7 @@ def do_pull(
     start_reg = src_pool.next()
     errors: list[str] = []
     for reg in src_pool.iter_from(start_reg):
-        ok, err = _pull_from_registry(reg, image)
+        ok, err = _pull_from_registry(reg, image, timeout=pull_timeout)
         if ok:
             return image, True, f"pulled (from {reg})"
         errors.append(f"{reg}: {err}")
@@ -233,6 +329,7 @@ def do_push(
     image: str, src_pool: RegistryPool, dst_registry: str,
     dry_run: bool = False, skip_existing: bool = False,
     dst_namespace: str | None = None,
+    cleaner: DiskCleaner | _NullCleaner | None = None,
 ) -> tuple[str, bool, str]:
     """Tag and push a local image to dst_registry, then clean up local copies."""
     dst_image = rewrite_namespace(image, dst_namespace) if dst_namespace else image
@@ -266,9 +363,13 @@ def do_push(
         docker_run(["docker", "rmi", dst], timeout=60)
         return image, False, f"push failed: {r.stderr.strip()}"
 
-    # Clean up both local copies
-    docker_run(["docker", "rmi", src], timeout=60)
-    docker_run(["docker", "rmi", dst], timeout=60)
+    # Deferred cleanup
+    if cleaner:
+        cleaner.mark_pushed(src, dst)
+        cleaner.maybe_cleanup()
+    else:
+        docker_run(["docker", "rmi", src], timeout=60)
+        docker_run(["docker", "rmi", dst], timeout=60)
     return image, True, "pushed"
 
 
@@ -276,6 +377,8 @@ def do_all(
     image: str, src_pool: RegistryPool, dst_registry: str,
     dry_run: bool = False, skip_existing: bool = False,
     dst_namespace: str | None = None,
+    pull_timeout: int = 120,
+    cleaner: DiskCleaner | _NullCleaner | None = None,
 ) -> tuple[str, bool, str]:
     """Pull + push + cleanup in one shot."""
     dst_image = rewrite_namespace(image, dst_namespace) if dst_namespace else image
@@ -309,7 +412,7 @@ def do_all(
         pulled_reg = None
         errors: list[str] = []
         for reg in src_pool.iter_from(start_reg):
-            ok, err = _pull_from_registry(reg, image)
+            ok, err = _pull_from_registry(reg, image, timeout=pull_timeout)
             if ok:
                 pulled_reg = reg
                 break
@@ -323,19 +426,22 @@ def do_all(
     # Tag
     r = docker_run(["docker", "tag", src, dst])
     if r.returncode != 0:
-        docker_run(["docker", "rmi", src], timeout=60)
         return image, False, f"tag failed: {r.stderr.strip()}"
 
     # Push
     r = docker_run(["docker", "push", dst], timeout=1200)
     if r.returncode != 0:
-        docker_run(["docker", "rmi", src], timeout=60)
         docker_run(["docker", "rmi", dst], timeout=60)
+        # Keep src for retry, don't delete
         return image, False, f"push failed: {r.stderr.strip()}"
 
-    # Clean up
-    docker_run(["docker", "rmi", src], timeout=60)
-    docker_run(["docker", "rmi", dst], timeout=60)
+    # Deferred cleanup
+    if cleaner:
+        cleaner.mark_pushed(src, dst)
+        cleaner.maybe_cleanup()
+    else:
+        docker_run(["docker", "rmi", src], timeout=60)
+        docker_run(["docker", "rmi", dst], timeout=60)
     return image, True, f"ok (from {pulled_reg or 'local cache'})"
 
 
@@ -380,8 +486,15 @@ def main():
         help="Which dataset(s) to mirror (default: all).",
     )
     parser.add_argument("--skip-existing", action="store_true", help="Skip images already in destination registry (push/all stage).")
+    parser.add_argument("--pull-timeout", type=int, default=120, help="Timeout in seconds for each pull attempt per registry (default: 120).")
     parser.add_argument("--output", type=str, default=None, help="Write image list to a file (one per line).")
     parser.add_argument("--test-one", action="store_true", help="Only mirror the first image (for testing connectivity).")
+    parser.add_argument(
+        "--disk-limit",
+        type=int,
+        default=90,
+        help="Disk usage percent threshold to trigger cleanup of local images (default: 90). Set to 0 to always delete immediately.",
+    )
     args = parser.parse_args()
 
     # Parse source registries
@@ -430,14 +543,21 @@ def main():
     # Resolve dst_namespace: empty string means keep original
     dst_ns = args.dst_namespace if args.dst_namespace else None
 
+    # Disk-aware cleaner for push/all stages
+    if args.disk_limit > 0 and args.stage in ("push", "all"):
+        cleaner = DiskCleaner(threshold_pct=args.disk_limit)
+        logger.info(f"Deferred cleanup enabled: images kept locally until disk > {args.disk_limit}%")
+    else:
+        cleaner = None  # immediate cleanup (legacy)
+
     # Build worker function per stage
     def _make_task(img: str):
         if args.stage == "pull":
-            return do_pull(img, src_pool, args.dry_run, args.skip_existing)
+            return do_pull(img, src_pool, args.dry_run, args.skip_existing, args.pull_timeout)
         elif args.stage == "push":
-            return do_push(img, src_pool, args.dst, args.dry_run, args.skip_existing, dst_ns)
+            return do_push(img, src_pool, args.dst, args.dry_run, args.skip_existing, dst_ns, cleaner)
         else:
-            return do_all(img, src_pool, args.dst, args.dry_run, args.skip_existing, dst_ns)
+            return do_all(img, src_pool, args.dst, args.dry_run, args.skip_existing, dst_ns, args.pull_timeout, cleaner)
 
     # Execute
     succeeded, failed = 0, 0
