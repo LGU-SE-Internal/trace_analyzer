@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import threading
 
 import numpy as np
 from datasets import Dataset, load_dataset
@@ -82,9 +83,159 @@ def _derive_pool_ref(ds: dict) -> str:
     repo_name = ds.get("repo_name", ds.get("repo", ""))
     commit_hash = ds.get("commit_hash", ds.get("base_commit", ""))
     safe_repo = re.sub(r"[^a-z0-9]", "-", repo_name.lower()).strip("-")
-    hash_prefix = commit_hash[:12].lower()
+    hash_prefix = commit_hash[:8].lower()
     name = f"{safe_repo}-{hash_prefix}"
     return name[:63].rstrip("-")
+
+
+def _mirror_image(docker_image: str) -> str:
+    """Rewrite docker image to mirror registry (matches batch_prefetch.py convention).
+
+    Set ARL_MIRROR_REGISTRY="" to disable mirroring and use original images.
+    """
+    registry = os.environ.get(
+        "ARL_MIRROR_REGISTRY", "pair-diag-cn-guangzhou.cr.volces.com"
+    )
+    if not registry:
+        return docker_image
+    namespace = os.environ.get("ARL_MIRROR_NAMESPACE", "code")
+    parts = docker_image.split("/", 1)
+    image_path = parts[1] if len(parts) == 2 else docker_image
+    return f"{registry}/{namespace}/{image_path}"
+
+
+class _PoolScaler:
+    """Auto-scales WarmPool replicas for concurrent SWEEnv instances.
+
+    In PPO training, each task spawns rollout.n parallel environments sharing
+    the same pool_ref. The ARL gateway doesn't auto-scale, so this scaler:
+    - Tracks how many envs need each pool (register in __init__)
+    - Scales the pool up to match demand (first reset() caller)
+    - Scales back to 1 when all envs close (last close() caller)
+
+    Thread-safe: all SWEEnv instances run in the same TaskRunner process.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        # pool_ref -> {total, closed, gateway_url, namespace, event, _scaling}
+        self._pools: dict[str, dict] = {}
+
+    def register(self, pool_ref: str, gateway_url: str, namespace: str, image: str):
+        """Called from SWEEnv.__init__. Accumulates demand count per pool."""
+        with self._lock:
+            if pool_ref not in self._pools:
+                self._pools[pool_ref] = {
+                    "total": 0,
+                    "closed": 0,
+                    "gateway_url": gateway_url,
+                    "namespace": namespace,
+                    "image": image,
+                    "event": threading.Event(),
+                    "_scaling": False,
+                }
+            self._pools[pool_ref]["total"] += 1
+
+    def ensure_scaled(self, pool_ref: str):
+        """Called from SWEEnv.reset() before _create_session().
+
+        First caller ensures the pool exists (creating if needed) and scales
+        to the required replica count, then signals others via Event.
+        Subsequent callers wait on the Event.
+        """
+        with self._lock:
+            info = self._pools.get(pool_ref)
+            if info is None:
+                return
+            event = info["event"]
+            if not event.is_set() and not info["_scaling"]:
+                info["_scaling"] = True
+                is_first = True
+            else:
+                is_first = False
+
+        if is_first:
+            target = info["total"]
+            image = info["image"]
+            log = logging.getLogger(f"PoolScaler.{pool_ref}")
+            try:
+                from arl.gateway_client import GatewayError
+                from arl.warmpool import WarmPoolManager
+
+                mgr = WarmPoolManager(
+                    namespace=info["namespace"],
+                    gateway_url=info["gateway_url"],
+                    timeout=300.0,
+                )
+                try:
+                    # Ensure pool exists, then scale to target replicas.
+                    # create_warmpool raises 409 if the pool already exists.
+                    try:
+                        mgr.create_warmpool(
+                            name=pool_ref, image=image, replicas=target
+                        )
+                        log.info(
+                            f"Created pool '{pool_ref}' with {target} replicas "
+                            f"(image={image})"
+                        )
+                    except GatewayError as e:
+                        if e.status_code == 409 or "already exists" in str(e):
+                            log.info(
+                                f"Pool '{pool_ref}' already exists, "
+                                f"scaling to {target} replicas"
+                            )
+                            mgr.scale_warmpool(pool_ref, target)
+                        else:
+                            raise
+                    log.info(f"Waiting for pool '{pool_ref}' to become ready...")
+                    mgr.wait_for_ready(
+                        pool_ref, timeout=300.0, poll_interval=5.0
+                    )
+                    log.info(f"Pool '{pool_ref}' ready with {target} replicas")
+                finally:
+                    mgr.close()
+            except Exception as e:
+                log.error(f"Failed to ensure pool '{pool_ref}': {e}")
+            finally:
+                event.set()
+        else:
+            event.wait(timeout=360.0)
+
+    def on_close(self, pool_ref: str):
+        """Called from SWEEnv.close() after delete_sandbox().
+
+        Last closer scales the pool back to 1 (keep one warm pod).
+        """
+        with self._lock:
+            info = self._pools.get(pool_ref)
+            if info is None:
+                return
+            info["closed"] += 1
+            if info["closed"] < info["total"]:
+                return
+            # Last close — capture info and remove entry
+            gateway_url = info["gateway_url"]
+            namespace = info["namespace"]
+            del self._pools[pool_ref]
+
+        log = logging.getLogger(f"PoolScaler.{pool_ref}")
+        try:
+            from arl.warmpool import WarmPoolManager
+
+            mgr = WarmPoolManager(namespace=namespace, gateway_url=gateway_url)
+            try:
+                log.info(
+                    f"All instances closed, scaling pool '{pool_ref}' back to 1"
+                )
+                mgr.scale_warmpool(pool_ref, 1)
+                log.info(f"Pool '{pool_ref}' scaled down to 1")
+            finally:
+                mgr.close()
+        except Exception as e:
+            log.error(f"Failed to scale down pool '{pool_ref}': {e}")
+
+
+_pool_scaler = _PoolScaler()
 
 
 class SWEEnv(BaseEnv):
@@ -147,6 +298,11 @@ class SWEEnv(BaseEnv):
         self.logger = logging.getLogger(f"SWEEnv.{self.pool_ref}")
         if not verbose:
             self.logger.setLevel(logging.CRITICAL)
+
+        _pool_scaler.register(
+            self.pool_ref, self.gateway_url, self.namespace,
+            image=_mirror_image(image),
+        )
 
     def _execute_raw(
         self, cmd: str, timeout: int = CMD_TIMEOUT, workdir: str | None = None
@@ -297,6 +453,7 @@ class SWEEnv(BaseEnv):
     def reset(self) -> tuple[str, dict]:
         if self.session:
             self.close()
+        _pool_scaler.ensure_scaled(self.pool_ref)
         self._create_session()
         self._setup_env()
 
@@ -386,6 +543,7 @@ class SWEEnv(BaseEnv):
             except Exception as e:
                 self.logger.error(f"Error deleting sandbox: {e}")
             self.session = None
+        _pool_scaler.on_close(self.pool_ref)
 
     @staticmethod
     def from_dict(extra_info: dict | str) -> "SWEEnv":
