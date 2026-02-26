@@ -8,11 +8,42 @@ import threading
 import numpy as np
 from datasets import Dataset, load_dataset
 
+import httpx
 from arl import SandboxSession
+from arl.gateway_client import GatewayClient
 
 from rllm.environments.swe.action import Action
 from rllm.environments.swe.reward import calculate_reward
 from rllm.environments.base.base_env import BaseEnv
+
+# ---------------------------------------------------------------------------
+# Monkey-patch: inject HTTP proxy into arl's GatewayClient.
+# arl uses a custom httpx.HTTPTransport which bypasses env-var proxy settings.
+# ---------------------------------------------------------------------------
+_proxy_url = os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY")
+if _proxy_url:
+    _orig_gateway_init = GatewayClient.__init__
+
+    def _patched_gateway_init(self, base_url="http://localhost:8080", timeout=300.0):
+        _orig_gateway_init(self, base_url, timeout)
+        # Re-create transport with proxy, preserving the original settings.
+        transport = httpx.HTTPTransport(
+            retries=3,
+            proxy=_proxy_url,
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=5,
+                keepalive_expiry=30.0,
+            ),
+        )
+        self._client = httpx.Client(
+            base_url=base_url.rstrip("/"),
+            timeout=self._client.timeout,
+            transport=transport,
+        )
+
+    GatewayClient.__init__ = _patched_gateway_init  # type: ignore[assignment]
+# ---------------------------------------------------------------------------
 
 TOOLS_DIR = os.path.join(os.path.dirname(__file__), "tools")
 CONTINUE_MSG = """
@@ -435,16 +466,37 @@ class SWEEnv(BaseEnv):
         except Exception:
             return self.entry.get("problem_statement", "")
 
-    def _create_session(self):
-        """Create a new ARL sandbox session."""
-        self.session = SandboxSession(
-            pool_ref=self.pool_ref,
-            namespace=self.namespace,
-            gateway_url=self.gateway_url,
-            keep_alive=True,
-            timeout=max(self.reward_timeout, self.step_timeout) + 60,
-        )
-        self.session.create_sandbox()
+    def _create_session(self, retries: int = 3):
+        """Create a new ARL sandbox session.
+
+        Retries on "already exists" errors caused by gateway session-ID
+        collisions under high concurrency (timestamp-based IDs).
+        """
+        import time
+        import random
+        from arl.gateway_client import GatewayError
+
+        for attempt in range(retries):
+            self.session = SandboxSession(
+                pool_ref=self.pool_ref,
+                namespace=self.namespace,
+                gateway_url=self.gateway_url,
+                keep_alive=True,
+                timeout=max(self.reward_timeout, self.step_timeout) + 60,
+            )
+            try:
+                self.session.create_sandbox()
+                return
+            except GatewayError as exc:
+                if "already exists" in str(exc) and attempt < retries - 1:
+                    wait = 0.5 + random.random()  # jitter to avoid repeated collision
+                    self.logger.warning(
+                        "Sandbox creation conflict (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, retries, wait, exc,
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
 
     # =====================================================
     # BaseEnv interface
