@@ -189,7 +189,7 @@ class _PoolScaler:
                             raise
                     log.info(f"Waiting for pool '{pool_ref}' to become ready...")
                     mgr.wait_for_ready(
-                        pool_ref, timeout=300.0, poll_interval=5.0
+                        pool_ref, timeout=3000.0, poll_interval=5.0 # use less timeout after the 1st run.
                     )
                     log.info(f"Pool '{pool_ref}' ready with {target} replicas")
                 finally:
@@ -199,7 +199,7 @@ class _PoolScaler:
             finally:
                 event.set()
         else:
-            event.wait(timeout=360.0)
+            event.wait(timeout=3600.0) # use less timeout after the 1st run.
 
     def on_close(self, pool_ref: str):
         """Called from SWEEnv.close() after delete_sandbox().
@@ -225,10 +225,10 @@ class _PoolScaler:
             mgr = WarmPoolManager(namespace=namespace, gateway_url=gateway_url)
             try:
                 log.info(
-                    f"All instances closed, scaling pool '{pool_ref}' back to 1"
+                    f"All instances closed, scaling pool '{pool_ref}' to 0"
                 )
-                mgr.scale_warmpool(pool_ref, 1)
-                log.info(f"Pool '{pool_ref}' scaled down to 1")
+                mgr.scale_warmpool(pool_ref, 0)
+                log.info(f"Pool '{pool_ref}' scaled down to 0")
             finally:
                 mgr.close()
         except Exception as e:
@@ -287,6 +287,7 @@ class SWEEnv(BaseEnv):
 
         # ARL session (created in reset)
         self.session: SandboxSession | None = None
+        self._closed = False
 
         # Detect dataset type
         image = self.entry.get("docker_image", self.entry.get("image_name", ""))
@@ -453,6 +454,7 @@ class SWEEnv(BaseEnv):
     def reset(self) -> tuple[str, dict]:
         if self.session:
             self.close()
+        self._closed = False
         _pool_scaler.ensure_scaled(self.pool_ref)
         self._create_session()
         self._setup_env()
@@ -537,6 +539,9 @@ class SWEEnv(BaseEnv):
         )
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         if self.session:
             try:
                 self.session.delete_sandbox()

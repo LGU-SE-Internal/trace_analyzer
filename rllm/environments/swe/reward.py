@@ -138,14 +138,15 @@ def _calculate_reward_swebench(session, ds: dict, timeout: int = 300) -> float:
 def _calculate_reward_swebench_with_output(session, ds: dict, timeout: int = 300) -> tuple[float, str]:
     """SWE-Bench Verified reward via swebench harness, also returning raw output."""
     from swebench.harness.constants import (
+        FAIL_ONLY_REPOS,
         FAIL_TO_PASS,
         KEY_INSTANCE_ID,
         PASS_TO_PASS,
+        EvalType,
         ResolvedStatus,
     )
     from swebench.harness.grading import get_eval_tests_report, get_resolution_status
-    from swebench.harness.log_parsers import get_eval_type
-    from swebench.harness.test_spec import make_test_spec
+    from swebench.harness.test_spec.test_spec import make_test_spec
 
     test_spec = make_test_spec(ds)
 
@@ -159,8 +160,13 @@ def _calculate_reward_swebench_with_output(session, ds: dict, timeout: int = 300
         FAIL_TO_PASS: test_spec.FAIL_TO_PASS,
         PASS_TO_PASS: test_spec.PASS_TO_PASS,
     }
+    eval_type = (
+        EvalType.FAIL_ONLY
+        if test_spec.repo in FAIL_ONLY_REPOS
+        else EvalType.PASS_AND_FAIL
+    )
     report = get_eval_tests_report(
-        eval_status_map, eval_ref, eval_type=get_eval_type(test_spec)
+        eval_status_map, eval_ref, eval_type=eval_type
     )
     success = get_resolution_status(report) == ResolvedStatus.FULL.value
     return int(success), out

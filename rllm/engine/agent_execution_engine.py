@@ -608,6 +608,14 @@ class AgentExecutionEngine:
                     colorful_print(f"Progress: {completed}/{total} trajectories completed", "cyan")
                     return task_id, res
                 finally:
+                    # Ensure env is closed to release sandbox pods
+                    env = self.envs[index] if index < len(self.envs) else None
+                    if env is not None:
+                        try:
+                            env.close()
+                        except Exception:
+                            pass
+                        self.envs[index] = None
                     # Put the index back in the queue when done
                     await index_queue.put(index)
 
