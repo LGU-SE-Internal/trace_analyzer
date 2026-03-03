@@ -29,13 +29,12 @@ export NCCL_SOCKET_IFNAME='eth0'
 
 export UV_INDEX_URL=https://bytedpypi.byted.org/simple/
 export HF_ENDPOINT=https://hf-mirror.com
-export DOCKER_MIRROR_PREFIX='aibrix-docker-mirror-cn-beijing.cr.volces.com'
 
 export HTTP_PROXY=http://sys-proxy-rd-relay.byted.org:8118
 export http_proxy=http://sys-proxy-rd-relay.byted.org:8118
 export https_proxy=http://sys-proxy-rd-relay.byted.org:8118
 
-export ARL_GATEWAY_URL="http://14.103.184.145:8080"
+export ARL_GATEWAY_URL="http://118.145.210.10:8080"
 
 # ============ Config ============
 WAND_PROJECT='xujunjielong'

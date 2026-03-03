@@ -22,7 +22,7 @@ Usage:
     python scripts/batch_prefetch.py --dataset swebench
 
     # Custom gateway and concurrency
-    python scripts/batch_prefetch.py --gateway http://14.103.184.145:8080 --concurrency 20
+    python scripts/batch_prefetch.py --gateway http://118.145.210.10:8080 --concurrency 20
 
     # Keep pools running after image pull (don't scale down)
     python scripts/batch_prefetch.py --no-scale-down-after

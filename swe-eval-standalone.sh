@@ -51,7 +51,7 @@ export https_proxy=http://sys-proxy-rd-relay.byted.org:8118
 export no_proxy="localhost,127.0.0.1"
 export NO_PROXY="localhost,127.0.0.1"
 
-export ARL_GATEWAY_URL="${ARL_GATEWAY_URL:-http://14.103.184.145:8080}"
+export ARL_GATEWAY_URL="${ARL_GATEWAY_URL:-http://118.145.210.10:8080}"
 export TOKENIZERS_PARALLELISM=true
 
 # ============ vLLM Server ============
