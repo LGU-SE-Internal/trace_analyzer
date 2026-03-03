@@ -607,6 +607,10 @@ class AgentExecutionEngine:
                     completed += 1
                     colorful_print(f"Progress: {completed}/{total} trajectories completed", "cyan")
                     return task_id, res
+                except Exception as exc:
+                    completed += 1
+                    logger.error("Task %s failed (%d/%d): %s", task_id, completed, total, exc)
+                    return task_id, None
                 finally:
                     # Ensure env is closed to release sandbox pods
                     env = self.envs[index] if index < len(self.envs) else None
@@ -622,8 +626,11 @@ class AgentExecutionEngine:
         # Run all tasks concurrently
         results = await asyncio.gather(*[sem_wrapper(task_id, task) for task_id, task in task_queue])
 
-        all_trajectories = {task_id: trajectory for task_id, trajectory in results}
-        ordered_trajectories = [all_trajectories[i] for i in range(len(all_trajectories))]
+        all_trajectories = {task_id: trajectory for task_id, trajectory in results if trajectory is not None}
+        failed = total - len(all_trajectories)
+        if failed:
+            logger.warning("%d/%d tasks failed and were excluded from results", failed, total)
+        ordered_trajectories = [all_trajectories[i] for i in range(total) if i in all_trajectories]
 
         self.executor.shutdown(wait=False, cancel_futures=True)
 

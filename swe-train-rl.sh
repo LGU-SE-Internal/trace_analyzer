@@ -11,12 +11,37 @@
 #
 #   # Train with custom root directory
 #   bash swe-train-rl.sh Qwen3-8B /mnt/bn/my-bucket
+#
+#   # Train with GRPO instead of RLOO
+#   ADV_ESTIMATOR=grpo bash swe-train-rl.sh Qwen3-8B
+#
+#   # Train with P2A bonus
+#   P2A_ENABLE=true P2A_BONUS_MAP_DIR=data/swe/bonus_maps bash swe-train-rl.sh Qwen3-8B
+#
+#   # Train from SFT checkpoint with custom experiment name
+#   MODEL_PATH_OVERRIDE=/path/to/sft/checkpoint EXPERIMENT_NAME=sft-rloo bash swe-train-rl.sh Qwen3-8B
 
 set -x
 
 # ============ Arguments ============
 MODEL_NAME=${1:?'Usage: bash swe-train-rl.sh <model_name> [root_dir]'}
 ROOT_DIR=${2:-'/mnt/bn/trae-research-models/xujunjielong'}
+
+# ============ Configurable via env vars (backward-compatible defaults) ============
+ADV_ESTIMATOR="${ADV_ESTIMATOR:-rloo}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-rl}"
+P2A_ENABLE="${P2A_ENABLE:-false}"
+P2A_M_MAX="${P2A_M_MAX:-3.0}"
+P2A_BONUS_MAP_DIR="${P2A_BONUS_MAP_DIR:-}"
+P2A_TRACKING_MODE="${P2A_TRACKING_MODE:-view_only}"  # view_only | view_and_bash
+MODEL_PATH_OVERRIDE="${MODEL_PATH_OVERRIDE:-}"
+
+# Resolve model path
+if [ -n "$MODEL_PATH_OVERRIDE" ]; then
+    MODEL_PATH="$MODEL_PATH_OVERRIDE"
+else
+    MODEL_PATH="$ROOT_DIR/models/$MODEL_NAME"
+fi
 
 # ============ Environment ============
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
@@ -38,7 +63,6 @@ export ARL_GATEWAY_URL="http://118.145.210.10:8080"
 
 # ============ Config ============
 WAND_PROJECT='xujunjielong'
-EXPERIMENT_NAME='agentic-swe-rl'
 
 # ============ Byted env ============
 uv pip uninstall ray wandb bytedray byted-wandb
@@ -53,9 +77,21 @@ uv pip install bytedray[default,data,serve,bytedance] byted-wandb
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/scripts/patch_verl.sh"
 
+# ============ Build P2A overrides ============
+P2A_OVERRIDES=""
+if [ "$P2A_ENABLE" = "true" ]; then
+    P2A_OVERRIDES="rllm.p2a.enable=true"
+    P2A_OVERRIDES="$P2A_OVERRIDES rllm.p2a.m_max=$P2A_M_MAX"
+    P2A_OVERRIDES="$P2A_OVERRIDES rllm.p2a.tracking_mode=$P2A_TRACKING_MODE"
+    if [ -n "$P2A_BONUS_MAP_DIR" ]; then
+        P2A_OVERRIDES="$P2A_OVERRIDES rllm.p2a.bonus_map_dir=$P2A_BONUS_MAP_DIR"
+    fi
+    echo "P2A enabled with overrides: $P2A_OVERRIDES"
+fi
+
 # ============ Run Training ============
 uv run --no-sync python3 -m rllm.trainer.verl.train_agent_ppo \
-    algorithm.adv_estimator=rloo \
+    algorithm.adv_estimator=$ADV_ESTIMATOR \
     data.train_files=data/swe/R2E_Gym_Subset.parquet \
     data.val_files=data/swe/SWE_Bench_Verified.parquet \
     trainer.default_local_dir=$ROOT_DIR/experiments/verl/$EXPERIMENT_NAME \
@@ -66,7 +102,7 @@ uv run --no-sync python3 -m rllm.trainer.verl.train_agent_ppo \
     data.max_response_length=32768 \
     data.filter_overlong_prompts=true \
     data.filter_overlong_prompts_workers=32 \
-    actor_rollout_ref.model.path=$ROOT_DIR/models/$MODEL_NAME \
+    actor_rollout_ref.model.path=$MODEL_PATH \
     actor_rollout_ref.hybrid_engine=true \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=true \
@@ -120,4 +156,5 @@ uv run --no-sync python3 -m rllm.trainer.verl.train_agent_ppo \
     +rllm.env.env_args.scaffold=r2egym \
     +rllm.agent.agent_args.scaffold=r2egym \
     trainer.total_epochs=1000 \
+    $P2A_OVERRIDES \
     2>&1 | tee $EXPERIMENT_NAME.log
