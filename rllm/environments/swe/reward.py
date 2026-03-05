@@ -91,22 +91,44 @@ def run_tests_with_output(
         return _calculate_reward_r2e_with_output(session, ds, repo_path, alt_path, timeout=timeout)
 
 
-def _run_in_session(session, cmd: str, workdir: str, timeout: int) -> tuple[str, str]:
+def _run_in_session(
+    session, cmd: str, workdir: str, timeout: int, swebench_verified: bool = False
+) -> tuple[str, str]:
     """Execute a command in the sandbox session.
+
+    Environment activation matches the upstream implementation for each
+    dataset type (see ``SWEEnv._execute_raw`` for detailed rationale):
+
+    - SWE-bench Verified: ``conda activate testbed`` (swebench harness)
+    - R2E-Gym: ``PATH=DOCKER_PATH`` (R2E-Gym DOCKER_PATH convention)
 
     Returns:
         (output, error_code_str) matching the previous runtime interface.
     """
-    response = session.execute(
-        steps=[
-            {
-                "name": "reward_cmd",
-                "command": ["sh", "-c", f"timeout {timeout} {cmd}"],
-                "workDir": workdir,
-                "timeout": timeout + 10,
-            }
-        ]
-    )
+    from rllm.environments.swe.swe import DOCKER_PATH
+
+    if swebench_verified:
+        shell_cmd = (
+            f"source /opt/miniconda3/bin/activate && "
+            f"conda activate testbed && "
+            f"timeout {timeout} {cmd}"
+        )
+        step = {
+            "name": "reward_cmd",
+            "command": ["bash", "-c", shell_cmd],
+            "workDir": workdir,
+            "timeout": timeout + 10,
+        }
+    else:
+        step = {
+            "name": "reward_cmd",
+            "command": ["bash", "-c", f"timeout {timeout} {cmd}"],
+            "env": {"PATH": DOCKER_PATH},
+            "workDir": workdir,
+            "timeout": timeout + 10,
+        }
+
+    response = session.execute(steps=[step])
     result = response.results[0]
     output = result.output.stdout
     if result.output.stderr:
@@ -150,7 +172,9 @@ def _calculate_reward_swebench_with_output(session, ds: dict, timeout: int = 300
 
     test_spec = make_test_spec(ds)
 
-    out, _ = _run_in_session(session, "/run_tests.sh", "/testbed", timeout)
+    out, _ = _run_in_session(
+        session, "/run_tests.sh", "/testbed", timeout, swebench_verified=True
+    )
     eval_status_map, found = _get_logs_eval(test_spec, out)
     if not found:
         return 0.0, out

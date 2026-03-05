@@ -24,6 +24,15 @@ IMPORTANT: YOU SHOULD NEVER ASK FOR HUMAN HELP.
 
 CMD_TIMEOUT = 120  # seconds
 
+# Matches R2E-Gym's DOCKER_PATH: ensures /root/.venv/bin (symlinked to the
+# correct conda env or repo venv during setup_env) is first on PATH, so that
+# ``python``, ``pip``, and all project CLI tools resolve to the right env
+# without requiring ``conda activate``.
+DOCKER_PATH = (
+    "/root/.venv/bin:/root/.local/bin:/root/.cargo/bin"
+    ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+
 SKIP_FILES_NEW = ["run_tests.sh", "r2e_tests"]
 
 # Only tools that do real work inside the sandbox.
@@ -288,6 +297,7 @@ class SWEEnv(BaseEnv):
         # ARL session (created in reset)
         self.session: SandboxSession | None = None
         self._closed = False
+        self._pool_close_counted = False  # only count pool close once across retries
 
         # Detect dataset type
         image = self.entry.get("docker_image", self.entry.get("image_name", ""))
@@ -312,20 +322,52 @@ class SWEEnv(BaseEnv):
 
         Low-level method that returns stdout/stderr separately so callers
         can format them as needed (e.g. with [STDOUT]/[STDERR] headers).
+
+        Environment activation strategy differs by dataset type to match
+        each upstream implementation:
+
+        - **SWE-bench Verified**: ``conda activate testbed`` before every
+          command, mirroring the swebench harness ``make_eval_script_list_py``
+          which prefixes every eval script with
+          ``source /opt/miniconda3/bin/activate && conda activate testbed``.
+          ``conda activate`` is needed (not just PATH) because it also runs
+          activation scripts in ``etc/conda/activate.d/`` and sets
+          ``CONDA_PREFIX`` etc. that some packages depend on.
+
+        - **R2E-Gym**: ``env={PATH: DOCKER_PATH}`` with ``/root/.venv/bin``
+          first, matching R2E-Gym's ``DockerRuntime.run()`` which passes
+          ``environment={"PATH": DOCKER_PATH}`` to ``container.exec_run``.
+          R2E-Gym containers use a plain venv (not conda) so PATH is
+          sufficient.
         """
         self._cmd_counter += 1
         workdir = workdir or self.repo_path
         assert self.session is not None, "Session not initialized"
-        response = self.session.execute(
-            steps=[
-                {
-                    "name": f"cmd_{self._cmd_counter}",
-                    "command": ["sh", "-c", f"timeout {timeout} {cmd}"],
-                    "workDir": workdir,
-                    "timeout": timeout + 10,
-                }
-            ]
-        )
+
+        if self.swebench_verified:
+            # SWE-bench: conda activate (matches swebench harness eval scripts)
+            shell_cmd = (
+                f"source /opt/miniconda3/bin/activate && "
+                f"conda activate testbed && "
+                f"timeout {timeout} {cmd}"
+            )
+            step = {
+                "name": f"cmd_{self._cmd_counter}",
+                "command": ["bash", "-c", shell_cmd],
+                "workDir": workdir,
+                "timeout": timeout + 10,
+            }
+        else:
+            # R2E-Gym: PATH-based activation (matches R2E-Gym DOCKER_PATH)
+            step = {
+                "name": f"cmd_{self._cmd_counter}",
+                "command": ["bash", "-c", f"timeout {timeout} {cmd}"],
+                "env": {"PATH": DOCKER_PATH},
+                "workDir": workdir,
+                "timeout": timeout + 10,
+            }
+
+        response = self.session.execute(steps=[step])
         result = response.results[0]
         stdout = re.sub(r"\x1b\[[0-9;]*m|\r", "", result.output.stdout or "")
         stderr = re.sub(r"\x1b\[[0-9;]*m|\r", "", result.output.stderr or "")
@@ -548,7 +590,9 @@ class SWEEnv(BaseEnv):
             except Exception as e:
                 self.logger.error(f"Error deleting sandbox: {e}")
             self.session = None
-        _pool_scaler.on_close(self.pool_ref)
+        if not self._pool_close_counted:
+            self._pool_close_counted = True
+            _pool_scaler.on_close(self.pool_ref)
 
     @staticmethod
     def from_dict(extra_info: dict | str) -> "SWEEnv":

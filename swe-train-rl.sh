@@ -77,6 +77,35 @@ uv pip install bytedray[default,data,serve,bytedance] byted-wandb
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/scripts/patch_verl.sh"
 
+# ============ Clean up stale sandboxes ============
+# Previous crashed runs may leave pods in "allocated" state, blocking
+# pool readiness.  Scale all warmpools to 0 and delete orphan sandboxes.
+ARL_NAMESPACE="${ARL_NAMESPACE:-default}"
+echo "Cleaning up stale ARL resources in namespace '$ARL_NAMESPACE'..."
+
+# Scale all non-zero warmpools to 0
+for pool in $(kubectl get warmpools -n "$ARL_NAMESPACE" -o jsonpath='{range .items[?(@.spec.replicas!=0)]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+    kubectl patch warmpool "$pool" -n "$ARL_NAMESPACE" --type=merge -p '{"spec":{"replicas":0}}' 2>/dev/null &
+done
+wait
+
+# Delete all sandbox CRDs (cleans up allocated/orphan pods)
+kubectl delete sandboxes --all -n "$ARL_NAMESPACE" --wait=false 2>/dev/null
+
+# Wait for all managed pods to terminate before proceeding
+echo "Waiting for all ARL pods to terminate..."
+CLEANUP_TIMEOUT=120
+CLEANUP_ELAPSED=0
+while kubectl get pods -l app.kubernetes.io/managed-by=arl -n "$ARL_NAMESPACE" --no-headers 2>/dev/null | grep -q .; do
+    if [ $CLEANUP_ELAPSED -ge $CLEANUP_TIMEOUT ]; then
+        echo "Warning: ARL pods still running after ${CLEANUP_TIMEOUT}s, proceeding anyway."
+        break
+    fi
+    sleep 5
+    CLEANUP_ELAPSED=$((CLEANUP_ELAPSED + 5))
+done
+echo "Cleanup done."
+
 # ============ Build P2A overrides ============
 P2A_OVERRIDES=""
 if [ "$P2A_ENABLE" = "true" ]; then

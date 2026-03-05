@@ -90,7 +90,7 @@ kill_existing_vllm() {
 
 start_vllm() {
     echo "Starting vLLM server: model=$MODEL_PATH tp=$VLLM_TP port=$VLLM_PORT"
-    VLLM_USE_V1=1 vllm serve "$MODEL_PATH" \
+    VLLM_USE_V1=1 uv run vllm serve "$MODEL_PATH" \
         --port "$VLLM_PORT" \
         --tensor-parallel-size "$VLLM_TP" \
         &>"$OUTPUT_DIR/vllm.log" &

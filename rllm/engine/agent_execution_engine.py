@@ -494,12 +494,14 @@ class AgentExecutionEngine:
 
     async def run_agent_trajectory_with_retry(self, idx, seed=0, mode="Text", **kwargs):
         loop = asyncio.get_event_loop()
-        for _ in range(self.retry_limit):
+        last_exception = None
+        for attempt in range(self.retry_limit):
             try:
                 application_id = str(uuid.uuid4())
                 return await asyncio.wait_for(self.run_agent_trajectory_async(idx, application_id=application_id, seed=seed, mode=mode, **kwargs), timeout=7200)
-            except Exception:
-                # traceback.print_exc()
+            except Exception as e:
+                last_exception = e
+                colorful_print(f"Trajectory {idx}: attempt {attempt + 1}/{self.retry_limit} failed: {e}", "red")
                 # Clean up the environment on failure before retrying
                 # This ensures pods are deleted even when exceptions occur
                 try:
@@ -510,8 +512,8 @@ class AgentExecutionEngine:
                 except Exception as cleanup_error:
                     colorful_print(f"Trajectory {idx}: Failed to clean up environment: {cleanup_error}", "red")
                 continue
-        traceback.print_exc()
-        raise Exception(f"Trajectory {idx} cannot complete. Please check the log message")
+        colorful_print(f"Trajectory {idx}: all {self.retry_limit} attempts failed. Last error: {last_exception}", "red")
+        raise Exception(f"Trajectory {idx} cannot complete. Please check the log message") from last_exception
 
     async def trajectory_generator(self, reset_seed=0, timing_raw=None, mode="Text", **kwargs):
         if timing_raw is None:
@@ -537,10 +539,40 @@ class AgentExecutionEngine:
                         **kwargs,
                     )
                 except Exception as e:
-                    import traceback
-
-                    # traceback.print_exc()
-                    raise e
+                    colorful_print(f"Trajectory {env_idx}: all retries exhausted, returning zeroed-out trajectory: {e}", "red")
+                    # Return a dummy zeroed-out result instead of crashing
+                    env = self.envs[env_idx]
+                    if mode == "Token":
+                        # Create minimal token result with zeroed masks
+                        prompt_messages = getattr(self.agents[env_idx], 'chat_completions', None)
+                        if not prompt_messages:
+                            prompt_messages = [{"role": "user", "content": "placeholder"}]
+                        try:
+                            prompt_tokens, _ = convert_messages_to_tokens_and_masks(
+                                prompt_messages, tokenizer=self.tokenizer,
+                                parser=self.chat_parser, contains_first_msg=True,
+                                contains_generation_msg=True,
+                            )
+                        except Exception:
+                            prompt_tokens = [self.tokenizer.bos_token_id or 0]
+                        result = {
+                            "prompt_tokens": prompt_tokens,
+                            "response_tokens": [self.tokenizer.eos_token_id],
+                            "response_masks": [0],
+                            "trajectory_reward": 0.0,
+                            "idx": env.idx,
+                            "chat_completions": [],
+                            "metrics": {
+                                "steps": 0,
+                                "reward_time": 0.0,
+                                "env_time": 0.0,
+                                "llm_time": 0.0,
+                                "total_time": 0.0,
+                                "token_mismatch": 1.0,
+                            },
+                        }
+                    else:
+                        raise e
                 return result
 
         # Create all N conceptual tasks. Their execution will be throttled by the semaphore
