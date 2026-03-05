@@ -38,7 +38,7 @@ import json
 import os
 import sys
 import traceback
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -179,17 +179,31 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
             "traceable": False,
         }
 
-    # Step 2-5: instrument sandbox, run tests, parse traces
-    # This requires the SWE environment to be set up
-    try:
-        from rllm.environments.swe.env import SWEEnv
+    # Step 2-5: create sandbox, instrument, run tests, parse traces
+    # Requires ARL gateway + k8s cluster with warm pools
+    from rllm.environments.swe.swe import SWEEnv
 
-        env = SWEEnv.from_dict(task)
+    env = SWEEnv.from_dict(task)
+    try:
+        # reset() creates the sandbox session, sets up the env, provisions tools
+        env.reset()
+
         patch_text = extract_non_test_patch(task)
         instrumented_callables = instrument_sandbox(env, patch_text)
 
-        # Run tests and collect traces
-        raw_output = env.run_tests()
+        if not instrumented_callables:
+            return compute_static_bonus_map(task)
+
+        # Run tests — traces are emitted to stderr by _swe_fault_tracer
+        test_script = (
+            "/run_tests.sh" if env.swebench_verified
+            else f"{env.alt_path}/run_tests.sh"
+        )
+        stdout, stderr, _ = env._execute_raw(
+            f"bash {test_script}", timeout=300
+        )
+        raw_output = f"{stdout}\n{stderr}" if stderr else stdout
+
         traces = parse_fault_traces(raw_output, instrumented_callables, env.repo_path)
         traces = aggregate_traces(traces)
 
@@ -202,6 +216,8 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
         print(f"  [WARN] Dynamic tracing failed for {instance_id}: {e}")
         # Fallback to static
         return compute_static_bonus_map(task)
+    finally:
+        env.close()
 
 
 def _process_one(args):
@@ -268,7 +284,7 @@ def main():
             if done % 100 == 0:
                 print(f"  Progress: {done}/{total} (traceable: {traceable_count}, errors: {error_count})")
     else:
-        with ProcessPoolExecutor(max_workers=args.n_parallel) as executor:
+        with ThreadPoolExecutor(max_workers=args.n_parallel) as executor:
             futures = {executor.submit(_process_one, item): item for item in work_items}
             done_count = 0
             for future in as_completed(futures):

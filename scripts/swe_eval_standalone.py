@@ -153,6 +153,18 @@ def save_fault_traces(traces_map: dict[str, list], output_dir: str):
     print(f"Saved {saved} fault trace files to {traces_dir}")
 
 
+def save_trajectories(trajectories: list, output_dir: str):
+    """Save per-trajectory chat completions in the same JSONL format as RL training."""
+    save_dir = os.path.join(output_dir, "chat_completions")
+    os.makedirs(save_dir, exist_ok=True)
+    output_path = os.path.join(save_dir, "eval.jsonl")
+    with open(output_path, "w") as f:
+        for traj in trajectories:
+            chat = traj.info.get("chat_completions", [])
+            f.write(json.dumps(chat) + "\n")
+    print(f"Saved {len(trajectories)} chat completions to {output_path}")
+
+
 def results_from_trajectories(trajectories: list) -> list[dict]:
     """Convert Trajectory objects to swe_report.py-compatible dicts."""
     records = []
@@ -166,6 +178,7 @@ def results_from_trajectories(trajectories: list) -> list[dict]:
             "n_samples": task.get("_n_samples", 1),
             "instance_id": task.get("instance_id", ""),
             "repo": task.get("repo", task.get("repo_name", "")),
+            "termination_reason": traj.info.get("termination_reason", "UNKNOWN"),
         })
     return records
 
@@ -515,6 +528,7 @@ def parse_args():
     # Concurrency
     parser.add_argument("--n_parallel", type=int, default=48, help="Max concurrent agent-env trajectories (default: 48)")
     parser.add_argument("--retry_limit", type=int, default=3, help="Retries per failed trajectory (default: 3)")
+    parser.add_argument("--max_tasks", type=int, default=None, help="Max number of tasks to evaluate (default: all)")
 
     # Output
     parser.add_argument("--output", type=str, default=None, help="Output JSONL path (default: auto-generated)")
@@ -533,10 +547,14 @@ def main():
 
     # Resolve temperature
     if args.temperature is None:
-        args.temperature = 1.0 if args.n_samples > 1 else 0.0
+        # args.temperature = 1.0 if args.n_samples > 1 else 0.0
+        args.temperature = 1.0 # use 1.0 for all runs. Introduce some randomness.
 
     # Load and prepare tasks
     base_tasks = load_tasks(args)
+    if args.max_tasks:
+        base_tasks = base_tasks[:args.max_tasks]
+        print(f"Limiting to first {args.max_tasks} tasks")
 
     if args.dry_run:
         # Dry run: no model, no agent, just harness on unmodified code
@@ -590,6 +608,7 @@ def main():
             output_path = os.path.join(args.output_dir, f"{model_tag}_{sample_tag}.jsonl")
 
         save_results_jsonl(results, output_path)
+        save_trajectories(trajectories, args.output_dir)
         run_report(output_path)
 
         # P2A localization analysis (if bonus maps provided)
