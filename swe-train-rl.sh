@@ -141,11 +141,11 @@ uv run --no-sync python3 -m rllm.trainer.verl.train_agent_ppo \
     trainer.logger=['console','wandb'] \
     trainer.project_name=$WAND_PROJECT \
     trainer.experiment_name=$EXPERIMENT_NAME \
-    trainer.val_before_train=true \
+    trainer.val_before_train=false \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=${ARNOLD_WORKER_NUM:-1} \
-    trainer.save_freq=10 \
-    trainer.test_freq=10 \
+    trainer.save_freq=100 \
+    trainer.test_freq=100 \
     trainer.default_hdfs_dir=null \
     rllm.env.name=swe \
     rllm.agent.name=sweagent \
@@ -157,4 +157,4 @@ uv run --no-sync python3 -m rllm.trainer.verl.train_agent_ppo \
     +rllm.agent.agent_args.scaffold=r2egym \
     trainer.total_epochs=1000 \
     $P2A_OVERRIDES \
-    2>&1 | tee $EXPERIMENT_NAME.log
+    > $EXPERIMENT_NAME.log 2>&1

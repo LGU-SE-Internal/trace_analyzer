@@ -2,7 +2,9 @@
 
 export UV_HTTP_TIMEOUT=300
 
-your_k8s_config_path='/mnt/bn/trae-research-models/xujunjielong/data/config'
+ROOT_DIR=${1:-'/mnt/bn/trae-research-models/xujunjielong'}
+
+your_k8s_config_path=$ROOT_DIR'/data/config'
 
 # IMPORTANT: if use BYTED cluster, set this to true
 use_byted_venv=true

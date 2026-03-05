@@ -387,6 +387,7 @@ class AgentExecutionEngine:
         # Aggregate final trajectory statistics
         compute_trajectory_reward(trajectory)
         compute_mc_return(trajectory, gamma=self.gamma)
+        trajectory.info["termination_reason"] = termination_reason
 
         if mode == "Text":
             return trajectory
@@ -604,6 +605,7 @@ class AgentExecutionEngine:
                     self.agents[index].trajectory.task = task  # type: ignore
                     res = await self.run_agent_trajectory_async(index, application_id=task_id)
                     res.task = task
+                    res.info["chat_completions"] = self.agents[index].chat_completions
                     completed += 1
                     colorful_print(f"Progress: {completed}/{total} trajectories completed", "cyan")
                     return task_id, res

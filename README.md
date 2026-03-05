@@ -4,12 +4,30 @@ Fork of [rLLM](https://github.com/rllm-project/rllm) for training SWE agents via
 
 Key addition: **P2A** (Program-Analysis-based Process Advantage) — a sound process supervision method that uses call-graph analysis to give bonus rewards for fault localization steps during RL training.
 
+## ARL SDK
+
+All Docker container operations in this repo (sandbox creation, command execution, pod lifecycle) are built on the **ARL (Agent Runtime Layer) SDK** — no direct Docker or K8s API calls are made. ARL provides a Gateway HTTP API that manages WarmPool-backed sandbox pods on a K8s cluster.
+
+Core abstractions:
+
+- **`SandboxSession`** — High-level session manager. Creates a sandbox from a warm pool, executes commands synchronously, supports restore/reconnect.
+- **`GatewayClient`** — HTTP client to the ARL Gateway (configured via `ARL_GATEWAY_URL`).
+- **`WarmPoolManager`** — Creates and manages WarmPools (pre-provisioned pod replicas for fast sandbox startup).
+
+Client source code: `.venv/lib/python3.11/site-packages/arl/`
+
 ## Setup
 
-Prerequisites: Python >= 3.10, `uv`, kubectl, a K8s cluster with ARL sandbox pods.
+Prerequisites: `uv` (Python package manager), kubectl, a K8s cluster with ARL sandbox pods.
+
+All Python code in this repo runs through `uv run`, which manages the virtual environment and dependencies automatically via `uv.lock`. Never use bare `python` — it won't find the project dependencies.
 
 ```bash
-# 1. Install dependencies
+# 0. Install uv if not present
+pip install uv
+
+# 1. Set up environment (venv, deps, kubectl, datasets)
+#    Edit swe-setup.sh first: set your_k8s_config_path to your cluster's kubeconfig
 bash swe-setup.sh
 
 # 2. Verify data files exist
@@ -19,7 +37,7 @@ ls data/swe/
 #   R2EGym_SFT_Trajectories.parquet (SFT warm-up data)
 ```
 
-Edit `swe-setup.sh` to set `your_k8s_config_path` to your cluster's kubeconfig before running.
+`swe-setup.sh` does: `uv venv --python 3.11` + `uv pip install -e ".[verl]"` + kubectl setup + dataset download. All subsequent shell scripts use `uv run --no-sync python3 ...` internally.
 
 ## Quick Start
 
@@ -32,6 +50,15 @@ bash swe-train-sft.sh Qwen3-4B
 ```
 
 Checkpoint saved to `$ROOT_DIR/experiments/verl/agentic-swe-sft/global_step_*/`.
+
+To merge FSDP sharded checkpoints (rank*.pt) into HuggingFace safetensors:
+
+```bash
+python -m verl.model_merger merge \
+    --backend fsdp \
+    --local_dir /path/to/global_step_xxx/actor \
+    --target_dir /path/to/merged_hf_model
+```
 
 ### RL Training (RLOO)
 
@@ -77,24 +104,19 @@ P2A gives bonus rewards to agent steps that read code on the golden call graph (
 One-time preprocessing. Extracts patched callables from each task's golden patch via AST diff. No sandbox needed, runs in minutes on CPU.
 
 ```bash
-python scripts/precompute_bonus_maps.py \
-    data/swe/R2E_Gym_Subset.parquet \
-    --output_dir data/swe/bonus_maps \
-    --mode static \
-    --n_parallel 32
+# Static mode (fast, CPU only, no sandbox)
+bash swe-precompute-bonus-maps.sh static
+
+# Dynamic mode (full call-graph distances, needs ARL sandbox)
+bash swe-precompute-bonus-maps.sh dynamic
+
+# Custom dataset / parallelism / limit
+DATA_FILE=data/swe/SWE_Bench_Verified.parquet \
+N_PARALLEL=50 \
+bash swe-precompute-bonus-maps.sh static
 ```
 
 Output: `data/swe/bonus_maps/{instance_id}.json` — one per task, reusable across all experiments.
-
-For full call-graph distances (requires sandbox):
-
-```bash
-python scripts/precompute_bonus_maps.py \
-    data/swe/R2E_Gym_Subset.parquet \
-    --output_dir data/swe/bonus_maps \
-    --mode dynamic \
-    --n_parallel 50
-```
 
 ### Train with P2A
 
@@ -120,7 +142,7 @@ P2A environment variables:
 After agent eval, analyze how well the agent localizes bugs:
 
 ```bash
-python scripts/swe_eval_standalone.py \
+uv run python3 scripts/swe_eval_standalone.py \
     --model /path/to/model \
     --data data/swe/SWE_Bench_Verified.parquet \
     --p2a_bonus_map_dir data/swe/bonus_maps \
@@ -130,7 +152,7 @@ python scripts/swe_eval_standalone.py \
 Or analyze existing trajectory logs:
 
 ```bash
-python scripts/analyze_localization.py \
+uv run python3 scripts/analyze_localization.py \
     --trajectories /path/to/chat_completions/10.jsonl \
     --bonus_map_dir data/swe/bonus_maps \
     --tracking_mode view_and_bash
@@ -217,6 +239,7 @@ swe-train-rl.sh                    # RL training entry point
 swe-train-sft.sh                   # SFT warm-up
 swe-train-table1.sh                # Table 1 experiment orchestration
 swe-eval-standalone.sh             # Standalone eval (auto-starts vLLM)
+swe-precompute-bonus-maps.sh       # P2A bonus map precomputation
 swe-setup.sh                       # Environment setup
 
 scripts/

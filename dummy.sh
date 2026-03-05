@@ -27,7 +27,7 @@ export https_proxy=http://sys-proxy-rd-relay.byted.org:8118
 
 # ============ Config ============
 WAND_PROJECT='xujunjielong'
-EXPERIMENT_NAME='agentic-swe-sft'
+EXPERIMENT_NAME='dummy'
 LR=1e-5
 
 # ============ Byted env ============
@@ -57,7 +57,7 @@ uv run --no-sync torchrun \
     data.train_batch_size=8 \
     data.micro_batch_size_per_gpu=2 \
     optim.lr=$LR \
-    trainer.total_epochs=2 \
+    trainer.total_epochs=2000 \
     model.partial_pretrain=$ROOT_DIR/models/$MODEL_NAME \
     model.fsdp_config.model_dtype=bf16 \
     trainer.default_local_dir=$ROOT_DIR/experiments/verl/$EXPERIMENT_NAME \
@@ -67,8 +67,3 @@ uv run --no-sync torchrun \
     ulysses_sequence_parallel_size=8 \
     use_remove_padding=true \
     > $EXPERIMENT_NAME.log 2>&1
-
-uv run --no-sync python -m verl.model_merger merge \
-    --backend fsdp \
-    --local_dir $ROOT_DIR/experiments/verl/$EXPERIMENT_NAME/global_step_806 \
-    --target_dir $ROOT_DIR/models/$MODEL_NAME-P2A_SFT

@@ -87,7 +87,7 @@ dispatch() {
 check_p2a_deps() {
     if [ ! -d "$P2A_BONUS_MAP_DIR" ] && [ "$DISPATCH_MODE" = "sequential" ]; then
         echo "ERROR: P2A bonus map directory not found: $P2A_BONUS_MAP_DIR"
-        echo "  Run: python scripts/precompute_bonus_maps.py data/swe/R2E_Gym_Subset.parquet --output_dir $P2A_BONUS_MAP_DIR --mode static"
+        echo "  Run: bash swe-bonus-maps.sh static"
         return 1
     fi
     return 0

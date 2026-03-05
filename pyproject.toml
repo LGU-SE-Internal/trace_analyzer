@@ -49,7 +49,7 @@ dependencies = [
     "wrapt",
     "asgiref>=3.7.0",
     "wandb",
-    "arl-env",
+    "arl-env==0.2.4",
 ]
 
 [project.optional-dependencies]

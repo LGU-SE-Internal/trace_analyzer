@@ -372,7 +372,7 @@ class SWEEnv(BaseEnv):
         if self.swebench_verified:
             self._run("chmod +x /run_tests.sh")
             self._run("ln -sf /opt/miniconda3/envs/testbed /root/.venv")
-            self._run("python -m pip install chardet")
+            self._run("/root/.venv/bin/python -m pip install chardet")
         else:
             self._run(f"ln -sf {self.repo_path}/.venv {self.alt_path}/.venv")
             self._run(

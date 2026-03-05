@@ -40,6 +40,7 @@ MODEL_PATH="$ROOT_DIR/models/$MODEL_NAME"
 # ============ Feature Flags ============
 DRY_RUN="${DRY_RUN:-false}"
 NORMALIZE_PYTEST="${NORMALIZE_PYTEST:-false}"
+MAX_TASKS="${MAX_TASKS:-}"
 
 # ============ Environment ============
 export UV_INDEX_URL=https://bytedpypi.byted.org/simple/
@@ -181,6 +182,10 @@ if [ "$NORMALIZE_PYTEST" = "true" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --normalize_pytest"
 fi
 
+if [ -n "$MAX_TASKS" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --max_tasks $MAX_TASKS"
+fi
+
 uv pip install swebench==4.1.0
 
 # ============ Run Evaluation ============
@@ -191,8 +196,8 @@ uv run --no-sync python3 "$SCRIPT_DIR/scripts/swe_eval_standalone.py" \
     --max_steps 100 \
     --max_prompt_length 131072 \
     --max_response_length 32768 \
-    --trajectory_timeout 1200 \
+    --trajectory_timeout 1800 \
     --n_parallel 50 \
     --output_dir "$OUTPUT_DIR" \
     $EXTRA_ARGS \
-    2>&1 | tee eval.log
+    > eval.log 2>&1

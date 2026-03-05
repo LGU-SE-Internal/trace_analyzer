@@ -373,16 +373,16 @@ wheels = [
 
 [[package]]
 name = "arl-env"
-version = "0.2.3"
+version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/b8/264735ee8e2c48f3d82afd7cac61b2315181da00573b2b839991de44b271/arl_env-0.2.3.tar.gz", hash = "sha256:5acbd8770a9b21658b810f76c56e92cf98e9d89ccacf2c839607f2592df43c78", size = 15275, upload-time = "2026-02-18T08:04:49.223Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/4b/2d58f01678fdac5f2e3c71dce07b34ff752035959c5b2f7b3ed7c426c46f/arl_env-0.2.4.tar.gz", hash = "sha256:f4f6b45c66ebc448ad1a458b24e9464557e93690615c297f5284c4f2628a7f40", size = 15386, upload-time = "2026-02-27T01:32:54.348Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/78/9e/c177c965c37fe83d8eea9132df0c2e6a294c20461a9b929c3bddcfeb5860/arl_env-0.2.3-py3-none-any.whl", hash = "sha256:629d0be36e9d3e7c4019a392d056be6d548905a0e64586c461b2a6e648ae0cd0", size = 16925, upload-time = "2026-02-18T08:04:50.371Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/22/1572b1bd57ea29ea76fe8fc1f7516e652617d3a024fd4d68ef6cb152c46f/arl_env-0.2.4-py3-none-any.whl", hash = "sha256:966a8c9bbcff7e90d42c37caa98a47e0d1a2fb276f0ed80ef6c81b262c2c39a1", size = 17055, upload-time = "2026-02-27T01:32:55.12Z" },
 ]
 
 [[package]]
@@ -7480,7 +7480,7 @@ web = [
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'sdk'" },
     { name = "antlr4-python3-runtime", specifier = "==4.9.3" },
-    { name = "arl-env" },
+    { name = "arl-env", specifier = "==0.2.4" },
     { name = "asgiref", specifier = ">=3.7.0" },
     { name = "asgiref", marker = "extra == 'sdk'" },
     { name = "browsergym", marker = "extra == 'web'" },
