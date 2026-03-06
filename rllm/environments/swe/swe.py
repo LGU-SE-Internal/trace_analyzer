@@ -120,7 +120,9 @@ class _PoolScaler:
     the same pool_ref. The ARL gateway doesn't auto-scale, so this scaler:
     - Tracks how many envs need each pool (register in __init__)
     - Scales the pool up to match demand (first reset() caller)
-    - Scales back to 1 when all envs close (last close() caller)
+    - On close: defers sandbox deletion; the last closer scales the pool
+      to 0 first (preventing CRD from recreating pods), then batch-deletes
+      all sandboxes.
 
     Thread-safe: all SWEEnv instances run in the same TaskRunner process.
     """
@@ -142,6 +144,7 @@ class _PoolScaler:
                     "image": image,
                     "event": threading.Event(),
                     "_scaling": False,
+                    "pending_sessions": [],
                 }
             self._pools[pool_ref]["total"] += 1
 
@@ -198,7 +201,7 @@ class _PoolScaler:
                             raise
                     log.info(f"Waiting for pool '{pool_ref}' to become ready...")
                     mgr.wait_for_ready(
-                        pool_ref, timeout=3000.0, poll_interval=5.0 # use less timeout after the 1st run.
+                        pool_ref, timeout=3000.0, poll_interval=5.0, min_ready=target,
                     )
                     log.info(f"Pool '{pool_ref}' ready with {target} replicas")
                 finally:
@@ -210,21 +213,32 @@ class _PoolScaler:
         else:
             event.wait(timeout=3600.0) # use less timeout after the 1st run.
 
-    def on_close(self, pool_ref: str):
-        """Called from SWEEnv.close() after delete_sandbox().
+    def on_close(self, pool_ref: str, session):
+        """Called from SWEEnv.close() instead of delete_sandbox().
 
-        Last closer scales the pool back to 1 (keep one warm pod).
+        Collects sessions and defers cleanup to the last closer, which
+        first scales the pool to 0 (preventing the CRD from recreating
+        pods) and then batch-deletes all sandboxes.
         """
         with self._lock:
             info = self._pools.get(pool_ref)
             if info is None:
+                # Pool already cleaned up; delete individually as fallback
+                if session:
+                    try:
+                        session.delete_sandbox()
+                    except Exception:
+                        pass
                 return
+            if session:
+                info["pending_sessions"].append(session)
             info["closed"] += 1
             if info["closed"] < info["total"]:
                 return
             # Last close — capture info and remove entry
             gateway_url = info["gateway_url"]
             namespace = info["namespace"]
+            pending = info["pending_sessions"]
             del self._pools[pool_ref]
 
         log = logging.getLogger(f"PoolScaler.{pool_ref}")
@@ -233,15 +247,25 @@ class _PoolScaler:
 
             mgr = WarmPoolManager(namespace=namespace, gateway_url=gateway_url)
             try:
-                log.info(
-                    f"All instances closed, scaling pool '{pool_ref}' to 0"
-                )
+                # Scale to 0 first so the CRD won't recreate pods as we
+                # delete sandboxes below.
+                log.info(f"All instances closed, scaling pool '{pool_ref}' to 0")
                 mgr.scale_warmpool(pool_ref, 0)
-                log.info(f"Pool '{pool_ref}' scaled down to 0")
+
+                # Now batch-delete all sandboxes.
+                for s in pending:
+                    try:
+                        s.delete_sandbox()
+                    except Exception as e:
+                        log.warning(f"Failed to delete sandbox: {e}")
+                log.info(
+                    f"Pool '{pool_ref}' scaled to 0 and "
+                    f"{len(pending)} sandbox(es) deleted"
+                )
             finally:
                 mgr.close()
         except Exception as e:
-            log.error(f"Failed to scale down pool '{pool_ref}': {e}")
+            log.error(f"Failed to clean up pool '{pool_ref}': {e}")
 
 
 _pool_scaler = _PoolScaler()
@@ -584,15 +608,11 @@ class SWEEnv(BaseEnv):
         if self._closed:
             return
         self._closed = True
-        if self.session:
-            try:
-                self.session.delete_sandbox()
-            except Exception as e:
-                self.logger.error(f"Error deleting sandbox: {e}")
-            self.session = None
+        session = self.session
+        self.session = None
         if not self._pool_close_counted:
             self._pool_close_counted = True
-            _pool_scaler.on_close(self.pool_ref)
+            _pool_scaler.on_close(self.pool_ref, session)
 
     @staticmethod
     def from_dict(extra_info: dict | str) -> "SWEEnv":

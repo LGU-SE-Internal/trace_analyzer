@@ -1,4 +1,4 @@
-# before execute it, please "pip install uv"
+pip install uv
 
 export UV_HTTP_TIMEOUT=300
 
