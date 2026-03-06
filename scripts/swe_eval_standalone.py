@@ -153,6 +153,18 @@ def save_fault_traces(traces_map: dict[str, list], output_dir: str):
     print(f"Saved {saved} fault trace files to {traces_dir}")
 
 
+def save_trajectories(trajectories: list, output_dir: str):
+    """Save per-trajectory chat completions in the same JSONL format as RL training."""
+    save_dir = os.path.join(output_dir, "chat_completions")
+    os.makedirs(save_dir, exist_ok=True)
+    output_path = os.path.join(save_dir, "eval.jsonl")
+    with open(output_path, "w") as f:
+        for traj in trajectories:
+            chat = traj.info.get("chat_completions", [])
+            f.write(json.dumps(chat) + "\n")
+    print(f"Saved {len(trajectories)} chat completions to {output_path}")
+
+
 def results_from_trajectories(trajectories: list) -> list[dict]:
     """Convert Trajectory objects to swe_report.py-compatible dicts."""
     records = []
@@ -166,6 +178,7 @@ def results_from_trajectories(trajectories: list) -> list[dict]:
             "n_samples": task.get("_n_samples", 1),
             "instance_id": task.get("instance_id", ""),
             "repo": task.get("repo", task.get("repo_name", "")),
+            "termination_reason": traj.info.get("termination_reason", "UNKNOWN"),
         })
     return records
 
@@ -333,7 +346,139 @@ def run_agent_eval(args, tasks):
     print()
 
     trajectories = asyncio.run(engine.execute_tasks(tasks))
-    return results_from_trajectories(trajectories)
+    return results_from_trajectories(trajectories), trajectories
+
+
+# =========================================================================
+# P2A Localization Analysis (post-eval)
+# =========================================================================
+
+def run_localization_analysis(trajectories, bonus_map_dir: str, tracking_mode: str, output_dir: str):
+    """Run Section 6.3 localization analysis on eval trajectories.
+
+    Uses the same analysis functions as analyze_localization.py but operates
+    directly on Trajectory objects instead of JSONL files.
+    """
+    from rllm.trainer.verl.p2a import (
+        BonusMapStore,
+        match_reads_to_callgraph,
+        parse_read_actions,
+    )
+
+    bonus_store = BonusMapStore(bonus_map_dir)
+    per_instance = []
+
+    for traj in trajectories:
+        task = traj.task or {}
+        instance_id = task.get("instance_id", "")
+        bonus_map = bonus_store.get(instance_id) if instance_id else None
+
+        # Extract assistant responses from Trajectory steps
+        responses = [step.model_response for step in traj.steps if step.model_response]
+
+        n_steps = len(responses)
+        n_on_graph = 0
+        n_view_steps = 0  # steps containing at least one read action
+        first_root_cause_step = -1
+        min_distance = float("inf")
+        distances = []
+
+        for step_i, response_text in enumerate(responses):
+            reads = parse_read_actions(response_text, tracking_mode=tracking_mode)
+            if not reads or bonus_map is None:
+                if reads:
+                    n_view_steps += 1
+                continue
+            n_view_steps += 1
+            distance = match_reads_to_callgraph(reads, bonus_map)
+            if distance >= 0:
+                n_on_graph += 1
+                distances.append(distance)
+                min_distance = min(min_distance, distance)
+                if distance < 1e-6 and first_root_cause_step < 0:
+                    first_root_cause_step = step_i
+
+        if min_distance == float("inf"):
+            min_distance = -1.0
+
+        per_instance.append({
+            "instance_id": instance_id,
+            "reward": float(traj.reward) if traj.reward is not None else 0.0,
+            "n_steps": n_steps,
+            "n_view_steps": n_view_steps,
+            "n_on_graph": n_on_graph,
+            "first_root_cause_step": first_root_cause_step,
+            "min_distance": min_distance,
+            "distances": distances,
+            "has_bonus_map": bonus_map is not None and bonus_map.get("traceable", False),
+        })
+
+    # Aggregate metrics
+    total_steps = sum(r["n_steps"] for r in per_instance)
+    total_view_steps = sum(r["n_view_steps"] for r in per_instance)
+    total_on_graph = sum(r["n_on_graph"] for r in per_instance)
+    root_cause_hits = sum(1 for r in per_instance if r["first_root_cause_step"] >= 0)
+    steps_to_root = [r["first_root_cause_step"] for r in per_instance if r["first_root_cause_step"] >= 0]
+    all_distances = [d for r in per_instance for d in r["distances"]]
+    n_traj = len(per_instance)
+
+    metrics = {
+        "n_trajectories": n_traj,
+        "total_steps": total_steps,
+        "total_view_steps": total_view_steps,
+        "total_on_graph_steps": total_on_graph,
+        "on_graph_read_ratio": total_on_graph / max(total_steps, 1),
+        "on_graph_view_density": total_on_graph / max(total_view_steps, 1),
+        "root_cause_coverage": root_cause_hits / max(n_traj, 1),
+        "root_cause_hits": root_cause_hits,
+    }
+
+    if steps_to_root:
+        import numpy as np
+        arr = np.array(steps_to_root)
+        metrics["avg_steps_to_root_cause"] = float(arr.mean())
+        metrics["median_steps_to_root_cause"] = float(np.median(arr))
+    else:
+        metrics["avg_steps_to_root_cause"] = -1.0
+
+    if all_distances:
+        import numpy as np
+        d_arr = np.array(all_distances)
+        metrics["distance_mean"] = float(d_arr.mean())
+        metrics["distance_std"] = float(d_arr.std())
+
+    # Print results
+    print()
+    print("=" * 60)
+    print("  P2A Localization Analysis")
+    print("=" * 60)
+    print(f"  Tracking mode: {tracking_mode}")
+    print(f"  Trajectories: {n_traj}")
+    print(f"  Total steps: {total_steps}")
+    print(f"  View steps (with reads): {total_view_steps}")
+    print(f"  On-graph steps: {total_on_graph}")
+    print()
+    print(f"  [Metric 1] On-graph Read Ratio: {metrics['on_graph_read_ratio']:.4f}")
+    print(f"  [Metric 1b] On-graph View Density: {metrics['on_graph_view_density']:.4f}")
+    print(f"  [Metric 2] Avg Steps to Root Cause: {metrics['avg_steps_to_root_cause']:.2f}")
+    if "median_steps_to_root_cause" in metrics:
+        print(f"             Median: {metrics['median_steps_to_root_cause']:.1f}")
+    print(f"  [Metric 3] Root Cause Coverage: {metrics['root_cause_coverage']:.4f} ({root_cause_hits}/{n_traj})")
+    if "distance_mean" in metrics:
+        print(f"  Mean distance: {metrics['distance_mean']:.4f} +/- {metrics['distance_std']:.4f}")
+    print("=" * 60)
+
+    # Save per-instance analysis
+    loc_output = os.path.join(output_dir, "localization_analysis.json")
+    os.makedirs(output_dir, exist_ok=True)
+    save_data = {"aggregate": metrics, "per_instance": [
+        {k: v for k, v in r.items() if k != "distances"} for r in per_instance
+    ]}
+    with open(loc_output, "w") as f:
+        json.dump(save_data, f, indent=2)
+    print(f"  Saved to {loc_output}")
+
+    return metrics
 
 
 # =========================================================================
@@ -375,9 +520,15 @@ def parse_args():
     mode_group.add_argument("--dry_run", action="store_true", help="Run harness on unmodified code without any model. Captures baseline test output for analysis.")
     mode_group.add_argument("--normalize_pytest", action="store_true", help="Standardize pytest args: ensure -rA and --tb=short are present in the test script.")
 
+    # P2A localization analysis
+    p2a_group = parser.add_argument_group("P2A analysis")
+    p2a_group.add_argument("--p2a_bonus_map_dir", type=str, default=None, help="Bonus map dir for P2A localization analysis (enables analysis)")
+    p2a_group.add_argument("--p2a_tracking_mode", type=str, default="view_only", choices=["view_only", "view_and_bash"], help="Tracking mode for localization analysis")
+
     # Concurrency
     parser.add_argument("--n_parallel", type=int, default=48, help="Max concurrent agent-env trajectories (default: 48)")
     parser.add_argument("--retry_limit", type=int, default=3, help="Retries per failed trajectory (default: 3)")
+    parser.add_argument("--max_tasks", type=int, default=None, help="Max number of tasks to evaluate (default: all)")
 
     # Output
     parser.add_argument("--output", type=str, default=None, help="Output JSONL path (default: auto-generated)")
@@ -396,10 +547,14 @@ def main():
 
     # Resolve temperature
     if args.temperature is None:
-        args.temperature = 1.0 if args.n_samples > 1 else 0.0
+        # args.temperature = 1.0 if args.n_samples > 1 else 0.0
+        args.temperature = 1.0 # use 1.0 for all runs. Introduce some randomness.
 
     # Load and prepare tasks
     base_tasks = load_tasks(args)
+    if args.max_tasks:
+        base_tasks = base_tasks[:args.max_tasks]
+        print(f"Limiting to first {args.max_tasks} tasks")
 
     if args.dry_run:
         # Dry run: no model, no agent, just harness on unmodified code
@@ -442,7 +597,7 @@ def main():
         tasks = repeat_tasks_for_pass_k(base_tasks, args.n_samples)
         print(f"Total trajectories to run: {len(tasks)} ({len(base_tasks)} tasks x {args.n_samples} samples)")
 
-        results = run_agent_eval(args, tasks)
+        results, trajectories = run_agent_eval(args, tasks)
 
         # Determine output path
         if args.output:
@@ -453,7 +608,17 @@ def main():
             output_path = os.path.join(args.output_dir, f"{model_tag}_{sample_tag}.jsonl")
 
         save_results_jsonl(results, output_path)
+        save_trajectories(trajectories, args.output_dir)
         run_report(output_path)
+
+        # P2A localization analysis (if bonus maps provided)
+        if args.p2a_bonus_map_dir:
+            run_localization_analysis(
+                trajectories,
+                bonus_map_dir=args.p2a_bonus_map_dir,
+                tracking_mode=args.p2a_tracking_mode,
+                output_dir=args.output_dir,
+            )
 
 
 if __name__ == "__main__":

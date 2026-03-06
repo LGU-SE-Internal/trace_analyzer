@@ -1,140 +1,276 @@
-<div align="center">
+# rLLM-SWE: Agentic RL for Software Engineering
 
-# rLLM
+Fork of [rLLM](https://github.com/rllm-project/rllm) for training SWE agents via agentic reinforcement learning. Agents learn to autonomously fix real-world software bugs from SWE-Bench and R2E-Gym datasets.
 
-<div>
-🚀 Reinforcement Learning for Language Agents🌟
-</div>
-</div>
-<div>
-<br>
+Key addition: **P2A** (Program-Analysis-based Process Advantage) — a sound process supervision method that uses call-graph analysis to give bonus rewards for fault localization steps during RL training.
 
-<div align="center">
-  
-[![Documentation](https://img.shields.io/badge/Documentation-blue?style=for-the-badge&logo=googledocs&logoColor=white)](https://rllm-project.readthedocs.io/en/latest)
-[![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/BDH46HT9en)
-[![Website](https://img.shields.io/badge/Site-%233f72af.svg?style=for-the-badge&logo=semanticweb&logoColor=white)](https://rllm-project.com)
-[![Blogs](https://img.shields.io/badge/Blogs-007AFF?style=for-the-badge)](https://rllm-project.com/blog)
-[![X](https://img.shields.io/badge/-black?logo=X&style=for-the-badge)](https://x.com/rllm_project)
+## ARL SDK
 
-</div>
+All Docker container operations in this repo (sandbox creation, command execution, pod lifecycle) are built on the **ARL (Agent Runtime Layer) SDK** — no direct Docker or K8s API calls are made. ARL provides a Gateway HTTP API that manages WarmPool-backed sandbox pods on a K8s cluster.
 
-</div>
+Core abstractions:
 
-rLLM is an open-source framework for post-training language agents via reinforcement learning. With rLLM, you can easily build your custom agents and environments, train them with reinforcement learning, and deploy them for real-world workloads.
+- **`SandboxSession`** — High-level session manager. Creates a sandbox from a warm pool, executes commands synchronously, supports restore/reconnect.
+- **`GatewayClient`** — HTTP client to the ARL Gateway (configured via `ARL_GATEWAY_URL`).
+- **`WarmPoolManager`** — Creates and manages WarmPools (pre-provisioned pod replicas for fast sandbox startup).
 
-## Releases 📰
+Client source code: `.venv/lib/python3.11/site-packages/arl/`
 
-<strong>[2025/12/11]</strong> We release rLLM [v0.2.1](https://github.com/rllm-org/rllm/tree/v0.2.1) which comes with support for Tinker backend, LoRA and VLM training, and support for Eval Protocol. We also bumped our `verl` backend to `v0.6.1`. [[SDK Blogpost]](https://rllm-project.com/post.html?post=sdk.md)
+## Setup
 
-<strong>[2025/10/16]</strong> rLLM [v0.2](https://github.com/rllm-org/rllm/tree/v0.2) is now officially released! We introduce `AgentWorkflowEngine` for training over arbitrary agentic programs. It also comes integrated with the official `verl-0.5.0`, featuring support for Megatron training. Check out this [blog post](https://rllm-project.com/post.html?post=rllm_v0.2.md) for more.
+Prerequisites: `uv` (Python package manager), kubectl, a K8s cluster with ARL sandbox pods.
 
-<strong>[2025/07/01]</strong> We release [`DeepSWE-Preview`](https://pretty-radio-b75.notion.site/DeepSWE-Training-a-Fully-Open-sourced-State-of-the-Art[…]-by-Scaling-RL-22281902c1468193aabbe9a8c59bbe33?pvs=73), a 32B software engineering agent (SWE) trained with purely RL that achieves 59% on SWEBench-Verified with test-time scaling,(42.2% Pass@1), topping the SWEBench leaderboard for open-weight models.
-
-<strong>[2025/04/08]</strong> We release [`DeepCoder-14B-Preview`](https://pretty-radio-b75.notion.site/DeepCoder-A-Fully-Open-Source-14B-Coder-at-O3-mini-Level-1cf81902c14680b3bee5eb349a512a51), a 14B coding model that achieves an impressive **60.6%** Pass@1 accuracy on LiveCodeBench (+8% improvement), matching the performance of `o3-mini-2025-01-031 (Low)` and `o1-2024-12-17`. 
-
-<strong>[2025/02/10]</strong> We release [`DeepScaleR-1.5B-Preview`](https://pretty-radio-b75.notion.site/DeepScaleR-Surpassing-O1-Preview-with-a-1-5B-Model-by-Scaling-RL-19681902c1468005bed8ca303013a4e2), a 1.5B model that surpasses O1-Preview and achieves <strong>43.1% Pass@1</strong> on AIME. We achieve this by iteratively scaling Deepseek's GRPO algorithm from 8K→16K->24K context length for thinking.
-
-## Getting Started 🎯
-
-rLLM requires `Python >= 3.10` (`3.11` is needed if using `tinker`). You can install it either directly via pip or build from source.
-
-There are three ways that you can install rLLM:
-
-### Approach A: Direct Installation
+All Python code in this repo runs through `uv run`, which manages the virtual environment and dependencies automatically via `uv.lock`. Never use bare `python` — it won't find the project dependencies.
 
 ```bash
-uv pip install "rllm[verl] @ git+https://github.com/rllm-org/rllm.git"
+# 0. Install uv if not present
+pip install uv
+
+# 1. Set up environment (venv, deps, kubectl, datasets)
+#    Edit swe-setup.sh first: set your_k8s_config_path to your cluster's kubeconfig
+bash swe-setup.sh
+
+# 2. Verify data files exist
+ls data/swe/
+#   R2E_Gym_Subset.parquet          (~4500 training tasks)
+#   SWE_Bench_Verified.parquet      (500 eval tasks)
+#   R2EGym_SFT_Trajectories.parquet (SFT warm-up data)
 ```
 
-_(or replace the `verl` above for `tinker` to install with tinker backend, see below for more details)_
+`swe-setup.sh` does: `uv venv --python 3.11` + `uv pip install -e ".[verl]"` + kubectl setup + dataset download. All subsequent shell scripts use `uv run --no-sync python3 ...` internally.
 
-### Approach B: Building from Source with `uv`
+## Quick Start
 
-**Step 1: Clone and Setup Environment**
+### SFT Warm-up
+
+Cold-start small models (Qwen3-4B) so they can produce valid trajectories before RL.
 
 ```bash
-# Clone the repository
-git clone https://github.com/rllm-org/rllm.git
-cd rllm
-
-# Create an uv environment
-uv venv --python 3.11
-source .venv/bin/activate
+bash swe-train-sft.sh Qwen3-4B
 ```
 
-**Step 2: Install rLLM with Training Backend**
+Checkpoint saved to `$ROOT_DIR/experiments/verl/agentic-swe-sft/global_step_*/`.
 
-rLLM supports two training backends: `verl` and `tinker`. Choose one based on your needs.
-
-_**Option I:** Using `verl` as Training Backend_
+To merge FSDP sharded checkpoints (rank*.pt) into HuggingFace safetensors:
 
 ```bash
-uv pip install -e ".[verl]"
+python -m verl.model_merger merge \
+    --backend fsdp \
+    --local_dir /path/to/global_step_xxx/actor \
+    --target_dir /path/to/merged_hf_model
 ```
 
-For CPU-only machines (e.g., macOS), use:
-```bash
-uv pip install -e ".[verl-cpu]"
-```
-
-For ByteDance Cluster, use:
-```bash
-uv pip install -e ".[verl-byted]"
-```
-
-_**Option II:** Using `tinker` as Training Backend_
+### RL Training (RLOO)
 
 ```bash
-# can add --torch-backend=cpu to train on CPU-only machines
-uv pip install -e .[tinker] 
+bash swe-train-rl.sh Qwen3-4B
 ```
 
-### Approach C: Installation with Docker 🐳
-
-For a containerized setup, you can use Docker:
+Train from an SFT checkpoint:
 
 ```bash
-# Build the Docker image
-docker build -t rllm .
-
-# Create and start the container
-docker create --runtime=nvidia --gpus all --net=host --shm-size="10g" --cap-add=SYS_ADMIN -v .:/workspace/rllm -v /tmp:/tmp --name rllm-container rllm sleep infinity
-docker start rllm-container
-
-# Enter the container
-docker exec -it rllm-container bash
+MODEL_PATH_OVERRIDE=/path/to/sft/checkpoint \
+EXPERIMENT_NAME=sft-rloo \
+bash swe-train-rl.sh Qwen3-4B
 ```
 
-For more detailed installation guide, including using `sglang` for `verl` backend, please refer to our [documentation](https://rllm-project.readthedocs.io/en/latest/getting-started/installation).
+Use GRPO instead of RLOO:
 
-## Awesome Projects using rLLM 🔥
-
-* [DeepScaleR](https://pretty-radio-b75.notion.site/DeepScaleR-Surpassing-O1-Preview-with-a-1-5B-Model-by-Scaling-RL-19681902c1468005bed8ca303013a4e2): Surpassing O1-Preview with a 1.5B Model by Scaling RL
-* [DeepCoder](https://pretty-radio-b75.notion.site/DeepCoder-A-Fully-Open-Source-14B-Coder-at-O3-mini-Level-1cf81902c14680b3bee5eb349a512a51): A Fully Open-Source 14B Coder at O3-mini Level
-* [DeepSWE](https://pretty-radio-b75.notion.site/DeepSWE-Training-a-Fully-Open-sourced-State-of-the-Art[%E2%80%A6]-by-Scaling-RL-22281902c1468193aabbe9a8c59bbe33): Training a Fully Open-sourced, State-of-the-Art Coding Agent by Scaling RL
-* [Tongyi DeepResearch](https://github.com/Alibaba-NLP/DeepResearch): A New Era of Open-Source AI Researchers [![GitHub Repo stars](https://img.shields.io/github/stars/Alibaba-NLP/DeepResearch)](https://github.com/Alibaba-NLP/DeepResearch)
-* [Terminal-Bench-RL](https://github.com/Danau5tin/terminal-bench-rl): Training Long-Horizon Terminal Agents with Reinforcement Learning [![GitHub Repo stars](https://img.shields.io/github/stars/Danau5tin/terminal-bench-rl)](https://github.com/Danau5tin/terminal-bench-rl)
-* [Cogito, Ergo Ludo](https://www.arxiv.org/abs/2509.25052): An Agent that Learns to Play by Reasoning and Planning
-* [PettingLLMs](https://pettingllms-ai.github.io/): Using On-Policy Reinforcement Learning for Stronger Multi-Agent System [![GitHub Repo stars](https://img.shields.io/github/stars/pettingllms-ai/PettingLLMs)](https://github.com/pettingllms-ai/PettingLLMs)
-* [Cut the Bill, Keep the Turns](https://agate-slipper-ef0.notion.site/Cut-the-Bill-Keep-the-Turns-Affordable-Multi-Turn-Search-RL-003f78214a4d451fb06f453d084e666c): Affordable Multi-Turn Search RL
-* [SETA](https://eigent-ai.notion.site/SETA-Scaling-Environment-for-Terminal-Agent-2d2511c70ba280a9b7c0fe3e7f1b6ab8): Scaling Environments for Terminal Agents [![GitHub Repo stars](https://img.shields.io/github/stars/camel-ai/seta)](https://github.com/camel-ai/seta)
-
-
-
-## Acknowledgements
-Our work is done as part of [Berkeley Sky Computing Lab](https://sky.cs.berkeley.edu/). The rLLM team is generously supported by grants from [Laude Institute](https://www.laude.org/), [AWS](https://aws.amazon.com/), [Hyperbolic](https://www.hyperbolic.ai/), [Fireworks AI](https://fireworks.ai/), and [Modal](https://modal.com/). We pay special thanks to [Together AI](https://www.together.ai/) for the research partnership and compute support. 
-
-## Citation
-```bibtex
-@misc{rllm2025,
-  title={rLLM: A Framework for Post-Training Language Agents},
-  author={Sijun Tan and Michael Luo and Colin Cai and Tarun Venkat and Kyle Montgomery and Aaron Hao and Tianhao Wu and Arnav Balyan and Manan Roongta and Chenguang Wang and Li Erran Li and Raluca Ada Popa and Ion Stoica},
-  year={2025},
-  howpublished={\url{https://pretty-radio-b75.notion.site/rLLM-A-Framework-for-Post-Training-Language-Agents-21b81902c146819db63cd98a54ba5f31}},
-  note={Notion Blog},
-  year={2025}
-}
+```bash
+ADV_ESTIMATOR=grpo bash swe-train-rl.sh Qwen3-4B
 ```
 
-You may also cite our prior work [DeepScaleR](https://scholar.googleusercontent.com/scholar.bib?q=info:PrmBADk39GwJ:scholar.google.com/&output=citation&scisdr=CgIJFx-xEMCQ6zOgcuI:AAZF9b8AAAAAaPCmauIfzg8Rm9ImNYDad0uPUK8&scisig=AAZF9b8AAAAAaPCmahXsNqb1jTQBw2iPfw2vm9g&scisf=4&ct=citation&cd=-1&hl=en&scfhb=1), [DeepCoder](https://scholar.googleusercontent.com/scholar.bib?q=info:xpZNEPI6opAJ:scholar.google.com/&output=citation&scisdr=CgIJFx-xEMCQ6zOgjM8:AAZF9b8AAAAAaPCmlM_hb3S0tzBSVrRYBZYDLWg&scisig=AAZF9b8AAAAAaPCmlG109SG8d8230AiDP4jMxlw&scisf=4&ct=citation&cd=-1&hl=en&scfhb=1), and [DeepSWE](https://scholar.googleusercontent.com/scholar.bib?q=info:J9rT3SnY_aMJ:scholar.google.com/&output=citation&scisdr=CgIJFx-xEMCQ6zOg3D4:AAZF9b8AAAAAaPCmxD7Nl0xA_AcAeydpcE1BXCo&scisig=AAZF9b8AAAAAaPCmxE2Spzf5lf-2Toys5xEpnuA&scisf=4&ct=citation&cd=-1&hl=en&scfhb=1).
+### Standalone Evaluation
+
+Lightweight eval using a vLLM inference server (no Ray/FSDP needed). Auto-starts vLLM if not running.
+
+```bash
+# Greedy eval (n=1)
+bash swe-eval-standalone.sh Qwen3-4B
+
+# pass@5
+bash swe-eval-standalone.sh Qwen3-4B 5
+
+# Dry run: test harness on unmodified code (no model needed)
+DRY_RUN=true bash swe-eval-standalone.sh dummy
+```
+
+## P2A: Process Supervision via Program Analysis
+
+P2A gives bonus rewards to agent steps that read code on the golden call graph (from failing test to bug location). It is a **bonus-only** scheme: on-graph steps get amplified advantage, off-graph steps are unchanged.
+
+### Step 0: Precompute Bonus Maps
+
+One-time preprocessing. Extracts patched callables from each task's golden patch via AST diff. No sandbox needed, runs in minutes on CPU.
+
+```bash
+# Static mode (fast, CPU only, no sandbox)
+bash swe-precompute-bonus-maps.sh static
+
+# Dynamic mode (full call-graph distances, needs ARL sandbox)
+bash swe-precompute-bonus-maps.sh dynamic
+
+# Custom dataset / parallelism / limit
+DATA_FILE=data/swe/SWE_Bench_Verified.parquet \
+N_PARALLEL=50 \
+bash swe-precompute-bonus-maps.sh static
+```
+
+Output: `data/swe/bonus_maps/{instance_id}.json` — one per task, reusable across all experiments.
+
+### Train with P2A
+
+```bash
+P2A_ENABLE=true \
+P2A_BONUS_MAP_DIR=data/swe/bonus_maps \
+bash swe-train-rl.sh Qwen3-4B
+```
+
+P2A environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `P2A_ENABLE` | `false` | Enable P2A advantage reshaping |
+| `P2A_BONUS_MAP_DIR` | — | Path to precomputed bonus maps (required) |
+| `P2A_M_MAX` | `3.0` | Max multiplier (single hyperparameter) |
+| `P2A_TRACKING_MODE` | `view_only` | `view_only` or `view_and_bash` |
+
+`view_only` tracks `file_editor view` commands. `view_and_bash` additionally tracks `cat`, `grep`, `head`, `tail`, `sed -n` in `execute_bash`.
+
+### Eval with Localization Analysis
+
+After agent eval, analyze how well the agent localizes bugs:
+
+```bash
+uv run python3 scripts/swe_eval_standalone.py \
+    --model /path/to/model \
+    --data data/swe/SWE_Bench_Verified.parquet \
+    --p2a_bonus_map_dir data/swe/bonus_maps \
+    --p2a_tracking_mode view_and_bash
+```
+
+Or analyze existing trajectory logs:
+
+```bash
+uv run python3 scripts/analyze_localization.py \
+    --trajectories /path/to/chat_completions/10.jsonl \
+    --bonus_map_dir data/swe/bonus_maps \
+    --tracking_mode view_and_bash
+```
+
+Both report four metrics:
+1. **On-graph Read Ratio** — fraction of all steps hitting the call graph
+2. **On-graph View Density** — fraction of *view steps* (steps with read actions) hitting the call graph
+3. **Avg Steps to Root Cause** — step index of first patched callable hit (lower is better)
+4. **Root Cause Coverage** — fraction of trajectories reading at least one patched callable
+
+## Table 1 Experiments
+
+Orchestration script for all paper experiments. Manages 10 variants with dependency ordering.
+
+```bash
+# Print all experiment commands (review before running)
+bash swe-train-table1.sh all Qwen3-4B
+
+# Run a single experiment
+bash swe-train-table1.sh rloo Qwen3-4B
+bash swe-train-table1.sh sft Qwen3-4B
+
+# After SFT finishes, run dependent experiments
+SFT_CHECKPOINT_DIR=/path/to/sft/checkpoint \
+bash swe-train-table1.sh sft-p2a Qwen3-4B
+
+# Run all sequentially (will stop on failure)
+DISPATCH_MODE=sequential bash swe-train-table1.sh all Qwen3-4B
+```
+
+### Experiment Variants
+
+| Experiment | Pipeline | Key Difference |
+|------------|----------|----------------|
+| `zeroshot` | eval only | No training |
+| `sft` | SFT | Standard supervised fine-tuning |
+| `grpo` | RL (GRPO) | Group-relative advantage |
+| `rloo` | RL (RLOO) | Leave-one-out advantage |
+| `sft-grpo` | SFT + RL (GRPO) | Warm-start GRPO |
+| `sft-rloo` | SFT + RL (RLOO) | Warm-start RLOO |
+| `p2a` | RL (RLOO + P2A view) | P2A with file_editor tracking |
+| `sft-p2a` | SFT + RL (RLOO + P2A view) | Warm-start P2A |
+| `p2a-bash` | RL (RLOO + P2A view+bash) | P2A with broader tracking |
+| `sft-p2a-bash` | SFT + RL (RLOO + P2A view+bash) | Warm-start P2A (broad) |
+
+### Execution Order
+
+```
+Step 0: Precompute bonus maps (CPU, minutes)
+
+Step 1 (parallel, no dependencies):
+  zeroshot, sft, grpo, rloo, p2a, p2a-bash
+
+Step 2 (after SFT checkpoint ready):
+  sft-grpo, sft-rloo, sft-p2a, sft-p2a-bash
+```
+
+All experiments log to W&B project `xujunjielong` with name prefix `table1-*`.
+
+## `swe-train-rl.sh` Reference
+
+Positional arguments:
+
+| Arg | Description |
+|-----|-------------|
+| `$1` | Model name (e.g., `Qwen3-4B`) — resolves to `$ROOT_DIR/models/$1` |
+| `$2` | Root directory (default: `/mnt/bn/trae-research-models/xujunjielong`) |
+
+Environment variable overrides:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ADV_ESTIMATOR` | `rloo` | Advantage estimator (`rloo` or `grpo`) |
+| `EXPERIMENT_NAME` | `agentic-swe-rl` | W&B experiment name, also determines checkpoint dir |
+| `MODEL_PATH_OVERRIDE` | — | Override model path (e.g., SFT checkpoint) |
+
+Default training config: n=8 rollouts/prompt, 50 max steps, 1200s trajectory timeout, lr=1e-6, bf16, 8 GPUs, R2E-Gym training data, SWE-Bench Verified eval.
+
+## Project Structure
+
+```
+swe-train-rl.sh                    # RL training entry point
+swe-train-sft.sh                   # SFT warm-up
+swe-train-table1.sh                # Table 1 experiment orchestration
+swe-eval-standalone.sh             # Standalone eval (auto-starts vLLM)
+swe-precompute-bonus-maps.sh       # P2A bonus map precomputation
+swe-setup.sh                       # Environment setup
+
+scripts/
+  precompute_bonus_maps.py         # P2A bonus map precomputation
+  swe_eval_standalone.py           # Eval logic (agent or dry-run)
+  analyze_localization.py          # Post-hoc localization analysis
+  swe_report.py                    # Results reporting
+  patch_verl.sh                    # VeRL runtime patches
+  data/swe_dataset.py              # Dataset download/preparation
+
+rllm/
+  trainer/
+    verl/
+      agent_ppo_trainer.py         # PPO trainer (stepwise advantage, P2A reshaping)
+      train_agent_ppo.py           # Training entry point (Hydra + Ray)
+      p2a.py                       # P2A core: bonus maps, read parsing, multiplier
+    config/
+      agent_ppo_trainer.yaml       # Hydra config (includes P2A settings)
+  environments/swe/
+    swe.py                         # SWE environment (ARL sandbox lifecycle)
+    trace.py                       # Trace pipeline (AST diff, instrumentation, call graph)
+    reward.py                      # Binary reward computation
+    tools/                         # Agent tool scripts (file_editor, search, bash)
+  agents/
+    swe_agent.py                   # SWE agent (response parsing, trajectory tracking)
+    agent.py                       # Base agent (Step, Trajectory dataclasses)
+  engine/
+    agent_execution_engine.py      # Async trajectory rollout
+
+data/swe/
+  R2E_Gym_Subset.parquet           # Training data (~4500 tasks)
+  SWE_Bench_Verified.parquet       # Eval data (500 tasks)
+  bonus_maps/                      # Precomputed P2A bonus maps (generated)
+```

@@ -11,12 +11,37 @@
 #
 #   # Train with custom root directory
 #   bash swe-train-rl.sh Qwen3-8B /mnt/bn/my-bucket
+#
+#   # Train with GRPO instead of RLOO
+#   ADV_ESTIMATOR=grpo bash swe-train-rl.sh Qwen3-8B
+#
+#   # Train with P2A bonus
+#   P2A_ENABLE=true P2A_BONUS_MAP_DIR=data/swe/bonus_maps bash swe-train-rl.sh Qwen3-8B
+#
+#   # Train from SFT checkpoint with custom experiment name
+#   MODEL_PATH_OVERRIDE=/path/to/sft/checkpoint EXPERIMENT_NAME=sft-rloo bash swe-train-rl.sh Qwen3-8B
 
 set -x
 
 # ============ Arguments ============
 MODEL_NAME=${1:?'Usage: bash swe-train-rl.sh <model_name> [root_dir]'}
 ROOT_DIR=${2:-'/mnt/bn/trae-research-models/xujunjielong'}
+
+# ============ Configurable via env vars (backward-compatible defaults) ============
+ADV_ESTIMATOR="${ADV_ESTIMATOR:-rloo}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-rl}"
+P2A_ENABLE="${P2A_ENABLE:-false}"
+P2A_M_MAX="${P2A_M_MAX:-3.0}"
+P2A_BONUS_MAP_DIR="${P2A_BONUS_MAP_DIR:-}"
+P2A_TRACKING_MODE="${P2A_TRACKING_MODE:-view_only}"  # view_only | view_and_bash
+MODEL_PATH_OVERRIDE="${MODEL_PATH_OVERRIDE:-}"
+
+# Resolve model path
+if [ -n "$MODEL_PATH_OVERRIDE" ]; then
+    MODEL_PATH="$MODEL_PATH_OVERRIDE"
+else
+    MODEL_PATH="$ROOT_DIR/models/$MODEL_NAME"
+fi
 
 # ============ Environment ============
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
@@ -38,7 +63,6 @@ export ARL_GATEWAY_URL="http://118.145.210.10:8080"
 
 # ============ Config ============
 WAND_PROJECT='xujunjielong'
-EXPERIMENT_NAME='agentic-swe-rl'
 
 # ============ Byted env ============
 uv pip uninstall ray wandb bytedray byted-wandb
@@ -53,9 +77,50 @@ uv pip install bytedray[default,data,serve,bytedance] byted-wandb
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/scripts/patch_verl.sh"
 
+# ============ Clean up stale sandboxes ============
+# Previous crashed runs may leave pods in "allocated" state, blocking
+# pool readiness.  Scale all warmpools to 0 and delete orphan sandboxes.
+ARL_NAMESPACE="${ARL_NAMESPACE:-default}"
+echo "Cleaning up stale ARL resources in namespace '$ARL_NAMESPACE'..."
+
+# Scale all non-zero warmpools to 0
+for pool in $(kubectl get warmpools -n "$ARL_NAMESPACE" -o jsonpath='{range .items[?(@.spec.replicas!=0)]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+    kubectl patch warmpool "$pool" -n "$ARL_NAMESPACE" --type=merge -p '{"spec":{"replicas":0}}' 2>/dev/null &
+done
+wait
+
+# Delete all sandbox CRDs (cleans up allocated/orphan pods)
+kubectl delete sandboxes --all -n "$ARL_NAMESPACE" --wait=false 2>/dev/null
+
+# Wait for all managed pods to terminate before proceeding
+echo "Waiting for all ARL pods to terminate..."
+CLEANUP_TIMEOUT=120
+CLEANUP_ELAPSED=0
+while kubectl get pods -l app.kubernetes.io/managed-by=arl -n "$ARL_NAMESPACE" --no-headers 2>/dev/null | grep -q .; do
+    if [ $CLEANUP_ELAPSED -ge $CLEANUP_TIMEOUT ]; then
+        echo "Warning: ARL pods still running after ${CLEANUP_TIMEOUT}s, proceeding anyway."
+        break
+    fi
+    sleep 5
+    CLEANUP_ELAPSED=$((CLEANUP_ELAPSED + 5))
+done
+echo "Cleanup done."
+
+# ============ Build P2A overrides ============
+P2A_OVERRIDES=""
+if [ "$P2A_ENABLE" = "true" ]; then
+    P2A_OVERRIDES="rllm.p2a.enable=true"
+    P2A_OVERRIDES="$P2A_OVERRIDES rllm.p2a.m_max=$P2A_M_MAX"
+    P2A_OVERRIDES="$P2A_OVERRIDES rllm.p2a.tracking_mode=$P2A_TRACKING_MODE"
+    if [ -n "$P2A_BONUS_MAP_DIR" ]; then
+        P2A_OVERRIDES="$P2A_OVERRIDES rllm.p2a.bonus_map_dir=$P2A_BONUS_MAP_DIR"
+    fi
+    echo "P2A enabled with overrides: $P2A_OVERRIDES"
+fi
+
 # ============ Run Training ============
 uv run --no-sync python3 -m rllm.trainer.verl.train_agent_ppo \
-    algorithm.adv_estimator=rloo \
+    algorithm.adv_estimator=$ADV_ESTIMATOR \
     data.train_files=data/swe/R2E_Gym_Subset.parquet \
     data.val_files=data/swe/SWE_Bench_Verified.parquet \
     trainer.default_local_dir=$ROOT_DIR/experiments/verl/$EXPERIMENT_NAME \
@@ -66,7 +131,7 @@ uv run --no-sync python3 -m rllm.trainer.verl.train_agent_ppo \
     data.max_response_length=32768 \
     data.filter_overlong_prompts=true \
     data.filter_overlong_prompts_workers=32 \
-    actor_rollout_ref.model.path=$ROOT_DIR/models/$MODEL_NAME \
+    actor_rollout_ref.model.path=$MODEL_PATH \
     actor_rollout_ref.hybrid_engine=true \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=true \
@@ -105,11 +170,11 @@ uv run --no-sync python3 -m rllm.trainer.verl.train_agent_ppo \
     trainer.logger=['console','wandb'] \
     trainer.project_name=$WAND_PROJECT \
     trainer.experiment_name=$EXPERIMENT_NAME \
-    trainer.val_before_train=true \
+    trainer.val_before_train=false \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=${ARNOLD_WORKER_NUM:-1} \
-    trainer.save_freq=10 \
-    trainer.test_freq=10 \
+    trainer.save_freq=100 \
+    trainer.test_freq=100 \
     trainer.default_hdfs_dir=null \
     rllm.env.name=swe \
     rllm.agent.name=sweagent \
@@ -120,4 +185,5 @@ uv run --no-sync python3 -m rllm.trainer.verl.train_agent_ppo \
     +rllm.env.env_args.scaffold=r2egym \
     +rllm.agent.agent_args.scaffold=r2egym \
     trainer.total_epochs=1000 \
-    2>&1 | tee $EXPERIMENT_NAME.log
+    $P2A_OVERRIDES \
+    > $EXPERIMENT_NAME.log 2>&1

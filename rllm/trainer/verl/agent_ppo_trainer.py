@@ -59,6 +59,17 @@ class AgentPPOTrainer(RayPPOTrainer):
         else:
             print("Using trajectory-level advantage, max_prompt_length and max_response_length will be applied episode-wise")
 
+        # P2A initialization
+        self.p2a_enabled = getattr(self.config.rllm, 'p2a', None) and self.config.rllm.p2a.enable
+        if self.p2a_enabled:
+            from rllm.trainer.verl.p2a import BonusMapStore
+            assert self.config.rllm.p2a.bonus_map_dir, "P2A requires bonus_map_dir to be set"
+            self.bonus_map_store = BonusMapStore(self.config.rllm.p2a.bonus_map_dir)
+            self.p2a_m_max = self.config.rllm.p2a.m_max
+            self.p2a_tracking_mode = getattr(self.config.rllm.p2a, 'tracking_mode', 'view_only')
+            self._p2a_step_distances = {}
+            print(f"P2A enabled: m_max={self.p2a_m_max}, tracking_mode={self.p2a_tracking_mode}, bonus_map_dir={self.config.rllm.p2a.bonus_map_dir}")
+
     def init_workers(self):
         super().init_workers()
 
@@ -173,6 +184,13 @@ class AgentPPOTrainer(RayPPOTrainer):
                 with marked_timer("step", timing_raw):
                     self.init_envs_and_agents(batch)
 
+                    # P2A: store idx→instance_id mapping for this batch
+                    if self.p2a_enabled:
+                        envs = self.agent_execution_engine.envs
+                        self._p2a_idx_to_instance_id = {
+                            i: getattr(env, 'entry', {}).get("instance_id", "") if hasattr(env, 'entry') else ""
+                            for i, env in enumerate(envs)
+                        }
                     if self.config.rllm.stepwise_advantage.enable:
                         final_gen_batch_output = self.generate_agent_steps(timing_raw=timing_raw, meta_info=batch.meta_info, uids=batch.non_tensor_batch["uid"])
                         repeat_counts = final_gen_batch_output.meta_info["repeat_counts"]
@@ -398,6 +416,13 @@ class AgentPPOTrainer(RayPPOTrainer):
                             # batch = batch.merge(other_step_batch)
                             batch = DataProto.concat([batch, other_step_batch])
 
+                        # P2A: per-step advantage reshaping (independent of stepwise_advantage)
+                        if self.p2a_enabled:
+                            p2a_metrics = self._apply_p2a_reshaping(batch, self._p2a_step_distances)
+                            if not hasattr(self, '_p2a_metrics'):
+                                self._p2a_metrics = {}
+                            self._p2a_metrics.update(p2a_metrics)
+
                     if self.config.rllm.mask_truncated_samples:
                         mask = batch.batch["attention_mask"][:, -1] == 1
                         batch = batch[~mask]
@@ -439,6 +464,11 @@ class AgentPPOTrainer(RayPPOTrainer):
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+
+                # P2A metrics
+                if self.p2a_enabled and hasattr(self, '_p2a_metrics'):
+                    metrics.update(self._p2a_metrics)
+                    self._p2a_metrics = {}
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
@@ -613,6 +643,10 @@ class AgentPPOTrainer(RayPPOTrainer):
                 steps.append(trajectory)
         # Sort trajectories by their idx, to ensure they are in order.
         steps.sort(key=lambda x: x["idx"])
+
+        # P2A: compute per-step distances before tokenization
+        if self.p2a_enabled:
+            self._p2a_step_distances = self._compute_p2a_distances(steps, uids)
 
         with marked_timer("transform_trajectory", timing_raw):
             # Transform the raw trajectories into DataProto format.
@@ -981,6 +1015,185 @@ class AgentPPOTrainer(RayPPOTrainer):
         # Assignment
         other_step_batch.batch["advantages"] = final_advantage
         other_step_batch.batch["returns"] = final_advantage
+
+    def _compute_p2a_distances(self, steps: list[dict], uids: np.ndarray) -> dict[str, float]:
+        """Compute P2A distances for each step in the batch.
+
+        Also computes Section 6.3 localization metrics per episode and stores
+        them in self._p2a_localization_metrics for W&B logging.
+
+        Returns a dict mapping step_id -> normalized distance (or -1.0 if off-graph).
+        """
+        from rllm.trainer.verl.p2a import parse_read_actions, match_reads_to_callgraph
+
+        tracking_mode = self.p2a_tracking_mode
+        distances = {}
+
+        # Per-episode localization tracking
+        episodes_with_root_cause_hit = 0  # hit d=0 patched callable
+        episodes_total = 0
+        steps_to_root_cause_list = []  # step index of first d=0 hit per episode
+        on_graph_distances = []  # all on-graph distances for distribution stats
+        total_view_steps = 0  # steps that contain at least one read action
+
+        for episode in steps:
+            idx = episode["idx"]
+            instance_id = self._p2a_idx_to_instance_id.get(idx, "")
+            bonus_map = self.bonus_map_store.get(instance_id) if instance_id else None
+            episodes_total += 1
+
+            episode_hit_root_cause = False
+            for step_i, step in enumerate(episode["steps"]):
+                step_id = f"{uids[idx]}_step{step_i}"
+                if bonus_map is None or not bonus_map.get("traceable", False):
+                    distances[step_id] = -1.0
+                    continue
+                reads = parse_read_actions(step.get("response", ""), tracking_mode=tracking_mode)
+                distance = match_reads_to_callgraph(reads, bonus_map)
+                distances[step_id] = distance
+
+                if reads:
+                    total_view_steps += 1
+
+                if distance >= 0:
+                    on_graph_distances.append(distance)
+                    # Root cause = patched callable (d=0, or very close)
+                    if distance < 1e-6 and not episode_hit_root_cause:
+                        episode_hit_root_cause = True
+                        steps_to_root_cause_list.append(step_i)
+
+            if episode_hit_root_cause:
+                episodes_with_root_cause_hit += 1
+
+        # Store localization metrics
+        self._p2a_localization_metrics = {}
+        if episodes_total > 0:
+            self._p2a_localization_metrics["p2a_loc/root_cause_coverage"] = (
+                episodes_with_root_cause_hit / episodes_total
+            )
+        if total_view_steps > 0:
+            self._p2a_localization_metrics["p2a_loc/on_graph_view_density"] = (
+                len(on_graph_distances) / total_view_steps
+            )
+            self._p2a_localization_metrics["p2a_loc/total_view_steps"] = total_view_steps
+        if steps_to_root_cause_list:
+            arr = np.array(steps_to_root_cause_list)
+            self._p2a_localization_metrics["p2a_loc/avg_steps_to_root_cause"] = float(arr.mean())
+            self._p2a_localization_metrics["p2a_loc/median_steps_to_root_cause"] = float(np.median(arr))
+        if on_graph_distances:
+            d_arr = np.array(on_graph_distances)
+            self._p2a_localization_metrics["p2a_loc/on_graph_distance_mean"] = float(d_arr.mean())
+            self._p2a_localization_metrics["p2a_loc/on_graph_distance_std"] = float(d_arr.std())
+            # Distance distribution buckets: d=0, d<0.25, d<0.5, d<0.75, d<=1.0
+            self._p2a_localization_metrics["p2a_loc/dist_bucket_d0"] = int((d_arr < 1e-6).sum())
+            self._p2a_localization_metrics["p2a_loc/dist_bucket_d0_25"] = int(((d_arr >= 1e-6) & (d_arr < 0.25)).sum())
+            self._p2a_localization_metrics["p2a_loc/dist_bucket_d25_50"] = int(((d_arr >= 0.25) & (d_arr < 0.5)).sum())
+            self._p2a_localization_metrics["p2a_loc/dist_bucket_d50_75"] = int(((d_arr >= 0.5) & (d_arr < 0.75)).sum())
+            self._p2a_localization_metrics["p2a_loc/dist_bucket_d75_100"] = int((d_arr >= 0.75).sum())
+
+        return distances
+
+    def _apply_p2a_reshaping(self, batch, p2a_distances: dict) -> dict:
+        """Apply P2A V2 multiplicative reshaping to per-step advantages.
+
+        Operates on a single (possibly concatenated) batch. Iterates all steps
+        by step_ids, looks up each step's call-graph distance, and multiplies
+        the advantage accordingly.  Completely independent of how advantages
+        were computed (stepwise broadcast, per-step, GRPO, RLOO, …).
+
+        Modifies advantages (and returns) in-place.
+        Returns metrics dict for logging.
+        """
+        from rllm.trainer.verl.p2a import compute_p2a_multiplier
+
+        m_max = self.p2a_m_max
+        on_graph_count = 0
+        off_graph_count = 0
+        multipliers = []
+
+        # Track pre/post advantage values for on-graph steps
+        pre_reshape_advs_on_graph = []
+        post_reshape_advs_on_graph = []
+        pre_reshape_advs_off_graph = []
+
+        step_ids = batch.non_tensor_batch.get("step_ids")
+        if step_ids is None:
+            return {}
+
+        if "response_mask" not in batch.batch.keys():
+            batch.batch["response_mask"] = compute_response_mask(batch)
+
+        mask = batch.batch["response_mask"]
+        advantages = batch.batch["advantages"]
+
+        for i, step_id in enumerate(step_ids):
+            step_mask = mask[i].bool()
+            if not step_mask.any():
+                continue
+
+            adv_mean = advantages[i][step_mask].mean().item()
+            distance = p2a_distances.get(str(step_id), -1.0)
+
+            if distance < 0:
+                off_graph_count += 1
+                pre_reshape_advs_off_graph.append(adv_mean)
+                continue
+
+            on_graph_count += 1
+            pre_reshape_advs_on_graph.append(adv_mean)
+
+            adv_sign = 1 if adv_mean > 0 else (-1 if adv_mean < 0 else 0)
+            multiplier = compute_p2a_multiplier(distance, m_max, adv_sign)
+            multipliers.append(multiplier)
+
+            # Apply in-place
+            advantages[i] = advantages[i] * multiplier
+            if "returns" in batch.batch:
+                batch.batch["returns"][i] = batch.batch["returns"][i] * multiplier
+
+            post_reshape_advs_on_graph.append(adv_mean * multiplier)
+
+        # Compute metrics
+        metrics = {
+            "p2a/on_graph_steps": on_graph_count,
+            "p2a/off_graph_steps": off_graph_count,
+            "p2a/on_graph_ratio": on_graph_count / max(on_graph_count + off_graph_count, 1),
+        }
+        if multipliers:
+            m_arr = np.array(multipliers)
+            metrics["p2a/multiplier_mean"] = float(m_arr.mean())
+            metrics["p2a/multiplier_min"] = float(m_arr.min())
+            metrics["p2a/multiplier_max"] = float(m_arr.max())
+            metrics["p2a/multiplier_std"] = float(m_arr.std())
+
+        # Pre/post advantage comparison (on-graph only)
+        if pre_reshape_advs_on_graph:
+            pre = np.array(pre_reshape_advs_on_graph)
+            post = np.array(post_reshape_advs_on_graph)
+            metrics["p2a/adv_on_graph_pre_mean"] = float(pre.mean())
+            metrics["p2a/adv_on_graph_post_mean"] = float(post.mean())
+            metrics["p2a/adv_on_graph_pre_std"] = float(pre.std())
+            metrics["p2a/adv_on_graph_post_std"] = float(post.std())
+            # Positive/negative breakdown
+            pos_mask = pre > 0
+            neg_mask = pre < 0
+            if pos_mask.any():
+                metrics["p2a/adv_on_graph_pos_pre_mean"] = float(pre[pos_mask].mean())
+                metrics["p2a/adv_on_graph_pos_post_mean"] = float(post[pos_mask].mean())
+            if neg_mask.any():
+                metrics["p2a/adv_on_graph_neg_pre_mean"] = float(pre[neg_mask].mean())
+                metrics["p2a/adv_on_graph_neg_post_mean"] = float(post[neg_mask].mean())
+
+        if pre_reshape_advs_off_graph:
+            off = np.array(pre_reshape_advs_off_graph)
+            metrics["p2a/adv_off_graph_mean"] = float(off.mean())
+            metrics["p2a/adv_off_graph_std"] = float(off.std())
+
+        # Merge localization metrics
+        if hasattr(self, '_p2a_localization_metrics'):
+            metrics.update(self._p2a_localization_metrics)
+
+        return metrics
 
     def _pad_dataproto_to_world_size(self, batch):
         world_sizes = []

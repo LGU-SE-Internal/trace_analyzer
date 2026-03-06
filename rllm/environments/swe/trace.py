@@ -752,3 +752,112 @@ def aggregate_traces(traces: list[list[dict]]) -> list[list[dict]]:
             maximal.append(trace)
 
     return maximal
+
+
+# ---------------------------------------------------------------------------
+# 8. build_call_graph_from_traces
+# ---------------------------------------------------------------------------
+
+def build_call_graph_from_traces(
+    traces: list[list[dict]],
+    modified_callables: list[dict],
+) -> dict:
+    """Build a call graph with hop distances from aggregated traces.
+
+    Each trace is a call chain from test → ... → patched callable.
+    Patched frames (is_patched=True) get hop_distance=0.
+    From each patched frame, we walk backward through the trace to assign
+    hop distances to callers.
+
+    For callables appearing in multiple traces, the minimum hop distance is kept.
+
+    Args:
+        traces: Output of aggregate_traces() — list of traces, each a list of
+                frame dicts with keys: file_path, line_no, func_name, is_patched.
+        modified_callables: Output of find_modified_callables_from_sources() —
+                list of dicts with keys: qualified_name, file_path, start_line, end_line.
+
+    Returns:
+        Dict with keys:
+            - call_graph_nodes: {node_key: {file_path, start_line, end_line,
+              hop_distance, normalized_distance}}
+            - hop_max: maximum hop distance observed
+            - patched_callables: the input modified_callables
+            - traceable: True
+    """
+    # Build a lookup for modified callable positions
+    patched_set = set()
+    for mc in modified_callables:
+        patched_set.add((mc["file_path"], mc["qualified_name"]))
+
+    # node_key → {file_path, func_name, min_hop_distance, line_no}
+    # We use file_path::func_name as node key
+    node_info: dict[str, dict] = {}
+
+    for trace in traces:
+        # Find patched frame indices in this trace
+        patched_indices = [
+            j for j, frame in enumerate(trace) if frame.get("is_patched", False)
+        ]
+        if not patched_indices:
+            continue
+
+        # For each patched frame, walk backward assigning hop distances
+        for patched_idx in patched_indices:
+            for hop, j in enumerate(range(patched_idx, -1, -1)):
+                frame = trace[j]
+                node_key = f"{frame['file_path']}::{frame['func_name']}"
+
+                if node_key not in node_info:
+                    node_info[node_key] = {
+                        "file_path": frame["file_path"],
+                        "func_name": frame["func_name"],
+                        "line_no": frame["line_no"],
+                        "hop_distance": hop,
+                    }
+                else:
+                    # Keep minimum hop distance
+                    node_info[node_key]["hop_distance"] = min(
+                        node_info[node_key]["hop_distance"], hop
+                    )
+
+    if not node_info:
+        return {
+            "call_graph_nodes": {},
+            "hop_max": 0,
+            "patched_callables": modified_callables,
+            "traceable": False,
+        }
+
+    hop_max = max(n["hop_distance"] for n in node_info.values())
+    hop_max = max(hop_max, 1)  # avoid division by zero
+
+    # Build final nodes with normalized distance
+    call_graph_nodes = {}
+    for node_key, info in node_info.items():
+        call_graph_nodes[node_key] = {
+            "file_path": info["file_path"],
+            "start_line": info["line_no"],
+            "end_line": info["line_no"],  # single-line approximation from trace
+            "hop_distance": info["hop_distance"],
+            "normalized_distance": info["hop_distance"] / hop_max,
+        }
+
+    # Enrich patched callable nodes with full line ranges
+    for mc in modified_callables:
+        key = f"{mc['file_path']}::{mc['qualified_name']}"
+        if key in call_graph_nodes:
+            call_graph_nodes[key]["start_line"] = mc["start_line"]
+            call_graph_nodes[key]["end_line"] = mc["end_line"]
+        # Also try with just the name part (func_name from trace may differ)
+        key_name = f"{mc['file_path']}::{mc.get('name', '')}"
+        if key_name in call_graph_nodes and key_name != key:
+            call_graph_nodes[key_name]["start_line"] = mc["start_line"]
+            call_graph_nodes[key_name]["end_line"] = mc["end_line"]
+
+    return {
+        "call_graph_nodes": call_graph_nodes,
+        "hop_max": hop_max,
+        "patched_callables": modified_callables,
+        "traceable": True,
+    }

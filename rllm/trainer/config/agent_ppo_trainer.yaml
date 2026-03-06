@@ -50,6 +50,12 @@ rllm:
     enable: False
     mode: broadcast # [broadcast, per_step]
     normalize_by_steps: False
+  p2a:
+    enable: False
+    m_max: 3.0
+    bonus_map_dir: null
+    tracking_mode: view_only  # [view_only, view_and_bash]
+    log_bonus_stats: True
   compact_filtering:
     enable: False
     mask_max_prompt_length_exceeded: True

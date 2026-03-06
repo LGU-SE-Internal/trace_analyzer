@@ -24,6 +24,15 @@ IMPORTANT: YOU SHOULD NEVER ASK FOR HUMAN HELP.
 
 CMD_TIMEOUT = 120  # seconds
 
+# Matches R2E-Gym's DOCKER_PATH: ensures /root/.venv/bin (symlinked to the
+# correct conda env or repo venv during setup_env) is first on PATH, so that
+# ``python``, ``pip``, and all project CLI tools resolve to the right env
+# without requiring ``conda activate``.
+DOCKER_PATH = (
+    "/root/.venv/bin:/root/.local/bin:/root/.cargo/bin"
+    ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+
 SKIP_FILES_NEW = ["run_tests.sh", "r2e_tests"]
 
 # Only tools that do real work inside the sandbox.
@@ -111,7 +120,9 @@ class _PoolScaler:
     the same pool_ref. The ARL gateway doesn't auto-scale, so this scaler:
     - Tracks how many envs need each pool (register in __init__)
     - Scales the pool up to match demand (first reset() caller)
-    - Scales back to 1 when all envs close (last close() caller)
+    - On close: defers sandbox deletion; the last closer scales the pool
+      to 0 first (preventing CRD from recreating pods), then batch-deletes
+      all sandboxes.
 
     Thread-safe: all SWEEnv instances run in the same TaskRunner process.
     """
@@ -133,6 +144,7 @@ class _PoolScaler:
                     "image": image,
                     "event": threading.Event(),
                     "_scaling": False,
+                    "pending_sessions": [],
                 }
             self._pools[pool_ref]["total"] += 1
 
@@ -189,7 +201,7 @@ class _PoolScaler:
                             raise
                     log.info(f"Waiting for pool '{pool_ref}' to become ready...")
                     mgr.wait_for_ready(
-                        pool_ref, timeout=3000.0, poll_interval=5.0 # use less timeout after the 1st run.
+                        pool_ref, timeout=3000.0, poll_interval=5.0, min_ready=target,
                     )
                     log.info(f"Pool '{pool_ref}' ready with {target} replicas")
                 finally:
@@ -201,21 +213,32 @@ class _PoolScaler:
         else:
             event.wait(timeout=3600.0) # use less timeout after the 1st run.
 
-    def on_close(self, pool_ref: str):
-        """Called from SWEEnv.close() after delete_sandbox().
+    def on_close(self, pool_ref: str, session):
+        """Called from SWEEnv.close() instead of delete_sandbox().
 
-        Last closer scales the pool back to 1 (keep one warm pod).
+        Collects sessions and defers cleanup to the last closer, which
+        first scales the pool to 0 (preventing the CRD from recreating
+        pods) and then batch-deletes all sandboxes.
         """
         with self._lock:
             info = self._pools.get(pool_ref)
             if info is None:
+                # Pool already cleaned up; delete individually as fallback
+                if session:
+                    try:
+                        session.delete_sandbox()
+                    except Exception:
+                        pass
                 return
+            if session:
+                info["pending_sessions"].append(session)
             info["closed"] += 1
             if info["closed"] < info["total"]:
                 return
             # Last close — capture info and remove entry
             gateway_url = info["gateway_url"]
             namespace = info["namespace"]
+            pending = info["pending_sessions"]
             del self._pools[pool_ref]
 
         log = logging.getLogger(f"PoolScaler.{pool_ref}")
@@ -224,15 +247,25 @@ class _PoolScaler:
 
             mgr = WarmPoolManager(namespace=namespace, gateway_url=gateway_url)
             try:
-                log.info(
-                    f"All instances closed, scaling pool '{pool_ref}' to 0"
-                )
+                # Scale to 0 first so the CRD won't recreate pods as we
+                # delete sandboxes below.
+                log.info(f"All instances closed, scaling pool '{pool_ref}' to 0")
                 mgr.scale_warmpool(pool_ref, 0)
-                log.info(f"Pool '{pool_ref}' scaled down to 0")
+
+                # Now batch-delete all sandboxes.
+                for s in pending:
+                    try:
+                        s.delete_sandbox()
+                    except Exception as e:
+                        log.warning(f"Failed to delete sandbox: {e}")
+                log.info(
+                    f"Pool '{pool_ref}' scaled to 0 and "
+                    f"{len(pending)} sandbox(es) deleted"
+                )
             finally:
                 mgr.close()
         except Exception as e:
-            log.error(f"Failed to scale down pool '{pool_ref}': {e}")
+            log.error(f"Failed to clean up pool '{pool_ref}': {e}")
 
 
 _pool_scaler = _PoolScaler()
@@ -288,6 +321,7 @@ class SWEEnv(BaseEnv):
         # ARL session (created in reset)
         self.session: SandboxSession | None = None
         self._closed = False
+        self._pool_close_counted = False  # only count pool close once across retries
 
         # Detect dataset type
         image = self.entry.get("docker_image", self.entry.get("image_name", ""))
@@ -312,20 +346,52 @@ class SWEEnv(BaseEnv):
 
         Low-level method that returns stdout/stderr separately so callers
         can format them as needed (e.g. with [STDOUT]/[STDERR] headers).
+
+        Environment activation strategy differs by dataset type to match
+        each upstream implementation:
+
+        - **SWE-bench Verified**: ``conda activate testbed`` before every
+          command, mirroring the swebench harness ``make_eval_script_list_py``
+          which prefixes every eval script with
+          ``source /opt/miniconda3/bin/activate && conda activate testbed``.
+          ``conda activate`` is needed (not just PATH) because it also runs
+          activation scripts in ``etc/conda/activate.d/`` and sets
+          ``CONDA_PREFIX`` etc. that some packages depend on.
+
+        - **R2E-Gym**: ``env={PATH: DOCKER_PATH}`` with ``/root/.venv/bin``
+          first, matching R2E-Gym's ``DockerRuntime.run()`` which passes
+          ``environment={"PATH": DOCKER_PATH}`` to ``container.exec_run``.
+          R2E-Gym containers use a plain venv (not conda) so PATH is
+          sufficient.
         """
         self._cmd_counter += 1
         workdir = workdir or self.repo_path
         assert self.session is not None, "Session not initialized"
-        response = self.session.execute(
-            steps=[
-                {
-                    "name": f"cmd_{self._cmd_counter}",
-                    "command": ["sh", "-c", f"timeout {timeout} {cmd}"],
-                    "workDir": workdir,
-                    "timeout": timeout + 10,
-                }
-            ]
-        )
+
+        if self.swebench_verified:
+            # SWE-bench: conda activate (matches swebench harness eval scripts)
+            shell_cmd = (
+                f"source /opt/miniconda3/bin/activate && "
+                f"conda activate testbed && "
+                f"timeout {timeout} {cmd}"
+            )
+            step = {
+                "name": f"cmd_{self._cmd_counter}",
+                "command": ["bash", "-c", shell_cmd],
+                "workDir": workdir,
+                "timeout": timeout + 10,
+            }
+        else:
+            # R2E-Gym: PATH-based activation (matches R2E-Gym DOCKER_PATH)
+            step = {
+                "name": f"cmd_{self._cmd_counter}",
+                "command": ["bash", "-c", f"timeout {timeout} {cmd}"],
+                "env": {"PATH": DOCKER_PATH},
+                "workDir": workdir,
+                "timeout": timeout + 10,
+            }
+
+        response = self.session.execute(steps=[step])
         result = response.results[0]
         stdout = re.sub(r"\x1b\[[0-9;]*m|\r", "", result.output.stdout or "")
         stderr = re.sub(r"\x1b\[[0-9;]*m|\r", "", result.output.stderr or "")
@@ -372,7 +438,7 @@ class SWEEnv(BaseEnv):
         if self.swebench_verified:
             self._run("chmod +x /run_tests.sh")
             self._run("ln -sf /opt/miniconda3/envs/testbed /root/.venv")
-            self._run("python -m pip install chardet")
+            self._run("/root/.venv/bin/python -m pip install chardet")
         else:
             self._run(f"ln -sf {self.repo_path}/.venv {self.alt_path}/.venv")
             self._run(
@@ -542,13 +608,11 @@ class SWEEnv(BaseEnv):
         if self._closed:
             return
         self._closed = True
-        if self.session:
-            try:
-                self.session.delete_sandbox()
-            except Exception as e:
-                self.logger.error(f"Error deleting sandbox: {e}")
-            self.session = None
-        _pool_scaler.on_close(self.pool_ref)
+        session = self.session
+        self.session = None
+        if not self._pool_close_counted:
+            self._pool_close_counted = True
+            _pool_scaler.on_close(self.pool_ref, session)
 
     @staticmethod
     def from_dict(extra_info: dict | str) -> "SWEEnv":
