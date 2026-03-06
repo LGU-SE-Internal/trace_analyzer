@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import numpy as np
 from datasets import Dataset, load_dataset
@@ -38,6 +39,17 @@ SWEAGENT_TOOL_FILES = [
 ]
 
 BLOCKED_COMMANDS = frozenset(["git", "ipython", "jupyter", "nohup"])
+
+# Error substrings that indicate a transient WarmPool scale-up / image-pull QPS issue.
+# When these appear in the exception message from create_sandbox(), it is safe to retry.
+_POOL_TRANSIENT_ERRORS = (
+    "pool became unhealthy",
+    "errimagepull",
+    "pull qps exceeded",
+    "no ready replicas",
+    "failing pods",
+    "imagepullbackoff",
+)
 
 R2E_ENV_IDS = [
     "R2E-Gym/R2E-Gym-Subset",
@@ -108,6 +120,8 @@ class SWEEnv(BaseEnv):
         pool_ref: str | None = None,
         verbose: bool = False,
         scaffold: str = "r2egym",
+        pool_scale_retries: int = 5,
+        pool_scale_retry_delay: float = 30.0,
     ):
         if entry is not None:
             self.entry = entry
@@ -134,6 +148,8 @@ class SWEEnv(BaseEnv):
         self.verbose = verbose
         self.scaffold = scaffold
         self._cmd_counter = 0
+        self.pool_scale_retries = pool_scale_retries
+        self.pool_scale_retry_delay = pool_scale_retry_delay
         assert scaffold in ["r2egym", "sweagent"], (
             f"Invalid scaffold: {scaffold}, must be one of ['r2egym', 'sweagent']"
         )
@@ -269,15 +285,42 @@ class SWEEnv(BaseEnv):
             return self.entry.get("problem_statement", "")
 
     def _create_session(self):
-        """Create a new ARL sandbox session."""
-        self.session = SandboxSession(
-            pool_ref=self.pool_ref,
-            namespace=self.namespace,
-            gateway_url=self.gateway_url,
-            keep_alive=True,
-            timeout=max(self.reward_timeout, self.step_timeout) + 60,
-        )
-        self.session.create_sandbox()
+        """Create a new ARL sandbox session.
+
+        Retries up to ``pool_scale_retries`` times when the WarmPool reports a
+        transient image-pull / QPS-limit error so that callers are not affected
+        by brief scale-up hiccups.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self.pool_scale_retries + 1):
+            try:
+                self.session = SandboxSession(
+                    pool_ref=self.pool_ref,
+                    namespace=self.namespace,
+                    gateway_url=self.gateway_url,
+                    keep_alive=True,
+                    timeout=max(self.reward_timeout, self.step_timeout) + 60,
+                )
+                self.session.create_sandbox()
+                break
+            except Exception as exc:
+                err_lower = str(exc).lower()
+                is_transient = any(pat in err_lower for pat in _POOL_TRANSIENT_ERRORS)
+                if is_transient and attempt < self.pool_scale_retries:
+                    delay = self.pool_scale_retry_delay * (2**attempt)
+                    self.logger.warning(
+                        "Transient pool error on attempt %d/%d: %s. "
+                        "Retrying in %.1fs...",
+                        attempt + 1,
+                        self.pool_scale_retries + 1,
+                        exc,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    last_exc = exc
+                    self.session = None
+                    continue
+                raise
 
         # Register in session pool for reconnection
         pool = SessionPool.get_instance()
