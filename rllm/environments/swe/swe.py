@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import time
+import urllib.error
+import urllib.request
 
 import numpy as np
 from datasets import Dataset, load_dataset
@@ -50,6 +52,9 @@ _POOL_TRANSIENT_ERRORS = (
     "failing pods",
     "imagepullbackoff",
 )
+
+# How often (seconds) to poll the gateway for pool readiness.
+_POOL_READY_POLL_INTERVAL = 10
 
 R2E_ENV_IDS = [
     "R2E-Gym/R2E-Gym-Subset",
@@ -122,6 +127,7 @@ class SWEEnv(BaseEnv):
         scaffold: str = "r2egym",
         pool_scale_retries: int = 5,
         pool_scale_retry_delay: float = 30.0,
+        pool_ready_timeout: int = 600,
     ):
         if entry is not None:
             self.entry = entry
@@ -150,6 +156,7 @@ class SWEEnv(BaseEnv):
         self._cmd_counter = 0
         self.pool_scale_retries = pool_scale_retries
         self.pool_scale_retry_delay = pool_scale_retry_delay
+        self.pool_ready_timeout = pool_ready_timeout
         assert scaffold in ["r2egym", "sweagent"], (
             f"Invalid scaffold: {scaffold}, must be one of ['r2egym', 'sweagent']"
         )
@@ -284,14 +291,92 @@ class SWEEnv(BaseEnv):
         except Exception:
             return self.entry.get("problem_statement", "")
 
+    def _pool_ready_replicas(self) -> int | None:
+        """Query the ARL gateway for the number of ready replicas in this pool.
+
+        Returns the ready-replica count, or ``None`` when the endpoint is
+        unavailable / returns an unexpected payload (so callers can skip the
+        wait and fall through to the existing retry logic).
+        """
+        url = (
+            f"{self.gateway_url.rstrip('/')}/api/v1/namespaces"
+            f"/{self.namespace}/warmpools/{self.pool_ref}"
+        )
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception:
+            return None
+
+        # Accept several common field layouts used by different ARL gateway
+        # versions: Kubernetes-style CRD status sub-object (readyReplicas),
+        # snake_case variant (ready_replicas), and pod-count alias (readyPods).
+        status = data.get("status", data)
+        for key in ("readyReplicas", "ready_replicas", "readyPods"):
+            if key in status:
+                try:
+                    return int(status[key])
+                except (TypeError, ValueError):
+                    pass
+        return None
+
+    def _wait_for_pool_ready(self):
+        """Block until the WarmPool has at least one ready replica.
+
+        Polls the ARL gateway every ``_POOL_READY_POLL_INTERVAL`` seconds.
+        If the gateway is unreachable or returns an unrecognised payload the
+        method returns immediately so the caller can attempt ``create_sandbox``
+        and rely on the retry loop for error handling.
+
+        Raises ``TimeoutError`` if the pool is still not ready after
+        ``pool_ready_timeout`` seconds.
+        """
+        if self.pool_ready_timeout <= 0:
+            return
+
+        deadline = time.monotonic() + self.pool_ready_timeout
+        already_waited = False
+        while True:
+            ready = self._pool_ready_replicas()
+            if ready is None:
+                # Gateway unreachable or payload unrecognised — skip wait.
+                return
+            if ready > 0:
+                if already_waited:
+                    self.logger.info(
+                        "Pool '%s' is now ready (%d replica(s)).",
+                        self.pool_ref,
+                        ready,
+                    )
+                return
+            already_waited = True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Pool '{self.pool_ref}' still has no ready replicas after "
+                    f"{self.pool_ready_timeout}s. Giving up."
+                )
+            sleep_secs = min(_POOL_READY_POLL_INTERVAL, remaining)
+            self.logger.warning(
+                "Pool '%s' has 0 ready replicas (still scaling up). "
+                "Waiting %.0fs... (%.0fs remaining)",
+                self.pool_ref,
+                sleep_secs,
+                remaining,
+            )
+            time.sleep(sleep_secs)
+
     def _create_session(self):
         """Create a new ARL sandbox session.
 
-        Retries up to ``pool_scale_retries`` times when the WarmPool reports a
-        transient image-pull / QPS-limit error so that callers are not affected
-        by brief scale-up hiccups.
+        Waits for the WarmPool to have at least one ready replica before
+        attempting to create the sandbox, then retries up to
+        ``pool_scale_retries`` times if a transient image-pull / QPS-limit
+        error still occurs.
         """
-        last_exc: Exception | None = None
+        self._wait_for_pool_ready()
+
         for attempt in range(self.pool_scale_retries + 1):
             try:
                 self.session = SandboxSession(
@@ -317,7 +402,6 @@ class SWEEnv(BaseEnv):
                         delay,
                     )
                     time.sleep(delay)
-                    last_exc = exc
                     self.session = None
                     continue
                 raise
