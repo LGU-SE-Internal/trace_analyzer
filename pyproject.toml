@@ -21,7 +21,7 @@ dependencies = [
     # Core ML/AI packages
     "torch",
     "torchvision",
-    "transformers>=4.55.0",
+    "transformers>=4.55.0,<=4.56.2",
     # Data processing
     "datasets>=2.20.0",
     "pandas",
@@ -49,7 +49,7 @@ dependencies = [
     "wrapt",
     "asgiref>=3.7.0",
     "wandb",
-    "arl-env",
+    "arl-env==0.2.5",
 ]
 
 [project.optional-dependencies]
@@ -75,10 +75,8 @@ verl = [
     "qwen-vl-utils",
 ]
 
-verl-cpu = [
+verl-local = [
     "verl==0.6.1",
-    "torch>=2.8.0",
-    "torchvision>=0.23.0",
     "qwen-vl-utils",
 ]
 
