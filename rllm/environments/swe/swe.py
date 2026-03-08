@@ -169,7 +169,6 @@ class _PoolScaler:
         if is_first:
             target = info["total"]
             image = info["image"]
-            log = logging.getLogger(f"PoolScaler.{pool_ref}")
             try:
                 from arl.gateway_client import GatewayError
                 from arl.warmpool import WarmPoolManager
@@ -186,28 +185,28 @@ class _PoolScaler:
                         mgr.create_warmpool(
                             name=pool_ref, image=image, replicas=target
                         )
-                        log.info(
+                        print(
                             f"Created pool '{pool_ref}' with {target} replicas "
                             f"(image={image})"
                         )
                     except GatewayError as e:
                         if e.status_code == 409 or "already exists" in str(e):
-                            log.info(
+                            print(
                                 f"Pool '{pool_ref}' already exists, "
                                 f"scaling to {target} replicas"
                             )
                             mgr.scale_warmpool(pool_ref, target)
                         else:
                             raise
-                    log.info(f"Waiting for pool '{pool_ref}' to become ready...")
+                    print(f"Waiting for pool '{pool_ref}' to become ready...")
                     mgr.wait_for_ready(
                         pool_ref, timeout=3000.0, poll_interval=5.0, min_ready=target,
                     )
-                    log.info(f"Pool '{pool_ref}' ready with {target} replicas")
+                    print(f"Pool '{pool_ref}' ready with {target} replicas")
                 finally:
                     mgr.close()
             except Exception as e:
-                log.error(f"Failed to ensure pool '{pool_ref}': {e}")
+                print(f"Failed to ensure pool '{pool_ref}': {e}")
             finally:
                 event.set()
         else:
@@ -241,7 +240,6 @@ class _PoolScaler:
             pending = info["pending_sessions"]
             del self._pools[pool_ref]
 
-        log = logging.getLogger(f"PoolScaler.{pool_ref}")
         try:
             from arl.warmpool import WarmPoolManager
 
@@ -249,7 +247,7 @@ class _PoolScaler:
             try:
                 # Scale to 0 first so the CRD won't recreate pods as we
                 # delete sandboxes below.
-                log.info(f"All instances closed, scaling pool '{pool_ref}' to 0")
+                print(f"All instances closed, scaling pool '{pool_ref}' to 0")
                 mgr.scale_warmpool(pool_ref, 0)
 
                 # Now batch-delete all sandboxes.
@@ -257,15 +255,15 @@ class _PoolScaler:
                     try:
                         s.delete_sandbox()
                     except Exception as e:
-                        log.warning(f"Failed to delete sandbox: {e}")
-                log.info(
+                        print(f"Failed to delete sandbox: {e}")
+                print(
                     f"Pool '{pool_ref}' scaled to 0 and "
                     f"{len(pending)} sandbox(es) deleted"
                 )
             finally:
                 mgr.close()
         except Exception as e:
-            log.error(f"Failed to clean up pool '{pool_ref}': {e}")
+            print(f"Failed to clean up pool '{pool_ref}': {e}")
 
 
 _pool_scaler = _PoolScaler()
