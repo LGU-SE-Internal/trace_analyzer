@@ -358,8 +358,8 @@ class AgentExecutionEngine:
 
         masked_out = False
         if self.overlong_filter:
-            if termination_reason == "TRUNCATION" or termination_reason == "MAX_STEPS" or termination_reason == "TIMEOUT":
-                # Mask out the entire response for overlong trajectories if the reward is 0.
+            if termination_reason in ("TRUNCATION", "MAX_STEPS", "TIMEOUT", "ENV_TIMEOUT"):
+                # Mask out the entire response for incomplete trajectories.
                 response_masks = [0] * len(response_masks)
                 masked_out = True
 
