@@ -1,14 +1,12 @@
 import base64
 import json
-import logging
 import os
 import re
-import threading
 
 import numpy as np
 from datasets import Dataset, load_dataset
 
-from arl import SandboxSession
+from arl import ManagedSession
 
 from rllm.environments.swe.action import Action
 from rllm.environments.swe.reward import calculate_reward
@@ -87,16 +85,6 @@ def format_observation(output: str, error_code: str, action_name: str) -> str:
     return f"Execution output of [{action_name}]:\n{output}"
 
 
-def _derive_pool_ref(ds: dict) -> str:
-    """Derive WarmPool name from dataset entry (matches batch_prefetch.py convention)."""
-    repo_name = ds.get("repo_name", ds.get("repo", ""))
-    commit_hash = ds.get("commit_hash", ds.get("base_commit", ""))
-    safe_repo = re.sub(r"[^a-z0-9]", "-", repo_name.lower()).strip("-")
-    hash_prefix = commit_hash[:8].lower()
-    name = f"{safe_repo}-{hash_prefix}"
-    return name[:63].rstrip("-")
-
-
 def _mirror_image(docker_image: str) -> str:
     """Rewrite docker image to mirror registry (matches batch_prefetch.py convention).
 
@@ -113,162 +101,6 @@ def _mirror_image(docker_image: str) -> str:
     return f"{registry}/{namespace}/{image_path}"
 
 
-class _PoolScaler:
-    """Auto-scales WarmPool replicas for concurrent SWEEnv instances.
-
-    In PPO training, each task spawns rollout.n parallel environments sharing
-    the same pool_ref. The ARL gateway doesn't auto-scale, so this scaler:
-    - Tracks how many envs need each pool (register in __init__)
-    - Scales the pool up to match demand (first reset() caller)
-    - On close: defers sandbox deletion; the last closer scales the pool
-      to 0 first (preventing CRD from recreating pods), then batch-deletes
-      all sandboxes.
-
-    Thread-safe: all SWEEnv instances run in the same TaskRunner process.
-    """
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        # pool_ref -> {total, closed, gateway_url, namespace, event, _scaling}
-        self._pools: dict[str, dict] = {}
-
-    def register(self, pool_ref: str, gateway_url: str, namespace: str, image: str):
-        """Called from SWEEnv.__init__. Accumulates demand count per pool."""
-        with self._lock:
-            if pool_ref not in self._pools:
-                self._pools[pool_ref] = {
-                    "total": 0,
-                    "closed": 0,
-                    "gateway_url": gateway_url,
-                    "namespace": namespace,
-                    "image": image,
-                    "event": threading.Event(),
-                    "_scaling": False,
-                    "pending_sessions": [],
-                }
-            self._pools[pool_ref]["total"] += 1
-
-    def ensure_scaled(self, pool_ref: str):
-        """Called from SWEEnv.reset() before _create_session().
-
-        First caller ensures the pool exists (creating if needed) and scales
-        to the required replica count, then signals others via Event.
-        Subsequent callers wait on the Event.
-        """
-        with self._lock:
-            info = self._pools.get(pool_ref)
-            if info is None:
-                return
-            event = info["event"]
-            if not event.is_set() and not info["_scaling"]:
-                info["_scaling"] = True
-                is_first = True
-            else:
-                is_first = False
-
-        if is_first:
-            target = info["total"]
-            image = info["image"]
-            try:
-                from arl.gateway_client import GatewayError
-                from arl.warmpool import WarmPoolManager
-
-                mgr = WarmPoolManager(
-                    namespace=info["namespace"],
-                    gateway_url=info["gateway_url"],
-                    timeout=300.0,
-                )
-                try:
-                    # Ensure pool exists, then scale to target replicas.
-                    # create_warmpool raises 409 if the pool already exists.
-                    try:
-                        mgr.create_warmpool(
-                            name=pool_ref, image=image, replicas=target
-                        )
-                        print(
-                            f"Created pool '{pool_ref}' with {target} replicas "
-                            f"(image={image})"
-                        )
-                    except GatewayError as e:
-                        if e.status_code == 409 or "already exists" in str(e):
-                            print(
-                                f"Pool '{pool_ref}' already exists, "
-                                f"scaling to {target} replicas"
-                            )
-                            mgr.scale_warmpool(pool_ref, target)
-                        else:
-                            raise
-                    print(f"Waiting for pool '{pool_ref}' to become ready...")
-                    mgr.wait_for_ready(
-                        pool_ref, timeout=3000.0, poll_interval=5.0, min_ready=target,
-                    )
-                    print(f"Pool '{pool_ref}' ready with {target} replicas")
-                finally:
-                    mgr.close()
-            except Exception as e:
-                print(f"Failed to ensure pool '{pool_ref}': {e}")
-            finally:
-                event.set()
-        else:
-            event.wait(timeout=3600.0) # use less timeout after the 1st run.
-
-    def on_close(self, pool_ref: str, session):
-        """Called from SWEEnv.close() instead of delete_sandbox().
-
-        Collects sessions and defers cleanup to the last closer, which
-        first scales the pool to 0 (preventing the CRD from recreating
-        pods) and then batch-deletes all sandboxes.
-        """
-        with self._lock:
-            info = self._pools.get(pool_ref)
-            if info is None:
-                # Pool already cleaned up; delete individually as fallback
-                if session:
-                    try:
-                        session.delete_sandbox()
-                    except Exception:
-                        pass
-                return
-            if session:
-                info["pending_sessions"].append(session)
-            info["closed"] += 1
-            if info["closed"] < info["total"]:
-                return
-            # Last close — capture info and remove entry
-            gateway_url = info["gateway_url"]
-            namespace = info["namespace"]
-            pending = info["pending_sessions"]
-            del self._pools[pool_ref]
-
-        try:
-            from arl.warmpool import WarmPoolManager
-
-            mgr = WarmPoolManager(namespace=namespace, gateway_url=gateway_url)
-            try:
-                # Scale to 0 first so the CRD won't recreate pods as we
-                # delete sandboxes below.
-                print(f"All instances closed, scaling pool '{pool_ref}' to 0")
-                mgr.scale_warmpool(pool_ref, 0)
-
-                # Now batch-delete all sandboxes.
-                for s in pending:
-                    try:
-                        s.delete_sandbox()
-                    except Exception as e:
-                        print(f"Failed to delete sandbox: {e}")
-                print(
-                    f"Pool '{pool_ref}' scaled to 0 and "
-                    f"{len(pending)} sandbox(es) deleted"
-                )
-            finally:
-                mgr.close()
-        except Exception as e:
-            print(f"Failed to clean up pool '{pool_ref}': {e}")
-
-
-_pool_scaler = _PoolScaler()
-
-
 class SWEEnv(BaseEnv):
     """Software Engineering Environment backed by ARL sandbox sessions."""
 
@@ -281,7 +113,7 @@ class SWEEnv(BaseEnv):
         reward_timeout: int = 300,
         gateway_url: str | None = None,
         namespace: str = "default",
-        pool_ref: str | None = None,
+        experiment_id: str | None = None,
         verbose: bool = False,
         scaffold: str = "r2egym",
         normalize_pytest: bool = False,
@@ -306,7 +138,9 @@ class SWEEnv(BaseEnv):
             "ARL_GATEWAY_URL", "http://localhost:8080"
         )
         self.namespace = namespace
-        self.pool_ref = pool_ref or _derive_pool_ref(self.entry)
+        self.experiment_id = experiment_id or os.environ.get(
+            "ARL_EXPERIMENT_ID", "default"
+        )
         self.total_steps = 0
         self.verbose = verbose
         self.scaffold = scaffold
@@ -317,25 +151,15 @@ class SWEEnv(BaseEnv):
         )
 
         # ARL session (created in reset)
-        self.session: SandboxSession | None = None
+        self.session: ManagedSession | None = None
         self._closed = False
-        self._pool_close_counted = False  # only count pool close once across retries
 
-        # Detect dataset type
+        # Detect dataset type and store mirrored image for ManagedSession
         image = self.entry.get("docker_image", self.entry.get("image_name", ""))
+        self._image = _mirror_image(image)
         self.swebench_verified = "swebench" in image
         self.repo_path = "/testbed"
         self.alt_path = "/" if self.swebench_verified else "/root"
-
-        # Logger
-        self.logger = logging.getLogger(f"SWEEnv.{self.pool_ref}")
-        if not verbose:
-            self.logger.setLevel(logging.CRITICAL)
-
-        _pool_scaler.register(
-            self.pool_ref, self.gateway_url, self.namespace,
-            image=_mirror_image(image),
-        )
 
     def _execute_raw(
         self, cmd: str, timeout: int = CMD_TIMEOUT, workdir: str | None = None
@@ -502,11 +326,11 @@ class SWEEnv(BaseEnv):
 
     def _create_session(self):
         """Create a new ARL sandbox session."""
-        self.session = SandboxSession(
-            pool_ref=self.pool_ref,
+        self.session = ManagedSession(
+            image=self._image,
+            experiment_id=self.experiment_id,
             namespace=self.namespace,
             gateway_url=self.gateway_url,
-            keep_alive=True,
             timeout=max(self.reward_timeout, self.step_timeout) + 60,
         )
         self.session.create_sandbox()
@@ -519,7 +343,6 @@ class SWEEnv(BaseEnv):
         if self.session:
             self.close()
         self._closed = False
-        _pool_scaler.ensure_scaled(self.pool_ref)
         self._create_session()
         self._setup_env()
 
@@ -608,9 +431,11 @@ class SWEEnv(BaseEnv):
         self._closed = True
         session = self.session
         self.session = None
-        if not self._pool_close_counted:
-            self._pool_close_counted = True
-            _pool_scaler.on_close(self.pool_ref, session)
+        if session:
+            try:
+                session.delete_sandbox()
+            except Exception:
+                pass
 
     @staticmethod
     def from_dict(extra_info: dict | str) -> "SWEEnv":
