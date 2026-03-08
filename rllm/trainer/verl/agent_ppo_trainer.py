@@ -186,9 +186,10 @@ class AgentPPOTrainer(RayPPOTrainer):
 
                     # P2A: store idx→instance_id mapping for this batch
                     if self.p2a_enabled:
+                        from rllm.environments.swe.trace import make_instance_id
                         envs = self.agent_execution_engine.envs
                         self._p2a_idx_to_instance_id = {
-                            i: getattr(env, 'entry', {}).get("instance_id", "") if hasattr(env, 'entry') else ""
+                            i: make_instance_id(getattr(env, 'entry', {})) if hasattr(env, 'entry') else ""
                             for i, env in enumerate(envs)
                         }
                     if self.config.rllm.stepwise_advantage.enable:
@@ -842,7 +843,7 @@ class AgentPPOTrainer(RayPPOTrainer):
         from verl.utils.torch_functional import pad_sequence_to_length
 
         overlong_filter = self.config.rllm.agent.get("overlong_filter", False)
-        overlong_reasons = {"TRUNCATION", "MAX_STEPS", "TIMEOUT"}
+        overlong_reasons = {"TRUNCATION", "MAX_STEPS", "TIMEOUT", "ENV_TIMEOUT"}
 
         all_prompts_list = []
         all_responses_list = []
