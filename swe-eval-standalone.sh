@@ -1,24 +1,25 @@
 #!/bin/bash
 # Standalone SWE Evaluation Script
+# Run swe-setup.sh first.
 #
 # Lightweight evaluation using AgentExecutionEngine + OpenAI-compatible API.
 # No Ray, no verl, no FSDP — just a vLLM server and ARL sandbox.
 #
 # Usage:
-#   bash swe-eval-standalone.sh <model_name> [n_samples] [root_dir]
+#   source swe-eval-standalone.sh <model_name> [n_samples] [root_dir]
 #
 # Examples:
 #   # Greedy eval (n=1)
-#   bash swe-eval-standalone.sh Qwen3-8B
+#   source swe-eval-standalone.sh Qwen3-8B
 #
 #   # pass@5 with sampling
-#   bash swe-eval-standalone.sh Qwen3-8B 5
+#   source swe-eval-standalone.sh Qwen3-8B 5
 #
 #   # Dry run: harness on unmodified code (no model needed)
-#   DRY_RUN=true bash swe-eval-standalone.sh dummy
+#   DRY_RUN=true source swe-eval-standalone.sh dummy
 #
 #   # Eval with standardized pytest output
-#   NORMALIZE_PYTEST=true bash swe-eval-standalone.sh Qwen3-8B
+#   NORMALIZE_PYTEST=true source swe-eval-standalone.sh Qwen3-8B
 #
 # vLLM lifecycle:
 #   The script auto-starts vLLM if no server is already serving the
@@ -28,14 +29,15 @@
 #   Or to stop ALL vLLM processes:
 #     pkill -f "vllm serve"
 
-set -x
 
 # ============ Arguments ============
 MODEL_NAME=${1:?'Usage: bash swe-eval-standalone.sh <model_name> [n_samples] [root_dir]'}
 N_SAMPLES=${2:-1}
 ROOT_DIR=${3:-'/mnt/bn/trae-research-models/xujunjielong'}
 
-MODEL_PATH="$ROOT_DIR/models/$MODEL_NAME"
+export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
+
+source scripts/clear_arl.sh
 
 # ============ Feature Flags ============
 DRY_RUN="${DRY_RUN:-false}"
@@ -43,22 +45,13 @@ NORMALIZE_PYTEST="${NORMALIZE_PYTEST:-false}"
 MAX_TASKS="${MAX_TASKS:-}"
 
 # ============ Environment ============
-export UV_INDEX_URL=https://bytedpypi.byted.org/simple/
-export HF_ENDPOINT=https://hf-mirror.com
-
-export HTTP_PROXY=http://sys-proxy-rd-relay.byted.org:8118
-export http_proxy=http://sys-proxy-rd-relay.byted.org:8118
-export https_proxy=http://sys-proxy-rd-relay.byted.org:8118
-export no_proxy="localhost,127.0.0.1"
-export NO_PROXY="localhost,127.0.0.1"
-
-export ARL_GATEWAY_URL="${ARL_GATEWAY_URL:-http://118.145.210.10:8080}"
 export TOKENIZERS_PARALLELISM=true
 
 # ============ vLLM Server ============
 VLLM_PORT="${VLLM_PORT:-8000}"
 VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:${VLLM_PORT}/v1}"
 VLLM_TP="${VLLM_TP:-8}"
+MODEL_PATH="$ROOT_DIR/models/$MODEL_NAME"
 
 # Check if vLLM is already serving the requested model.
 # Returns 0 if the model is being served, 1 otherwise.
@@ -142,28 +135,6 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-# ============ Clean up stale sandboxes ============
-# Previous crashed runs may leave pods in "allocated" state, blocking
-# pool readiness.  Scale all warmpools to 0 and delete orphan sandboxes.
-ARL_NAMESPACE="${ARL_NAMESPACE:-default}"
-echo "Cleaning up stale ARL resources in namespace '$ARL_NAMESPACE'..."
-
-# Scale all non-zero warmpools to 0
-for pool in $(kubectl get warmpools -n "$ARL_NAMESPACE" -o jsonpath='{range .items[?(@.spec.replicas!=0)]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
-    kubectl patch warmpool "$pool" -n "$ARL_NAMESPACE" --type=merge -p '{"spec":{"replicas":0}}' 2>/dev/null &
-done
-wait
-
-# Delete all sandbox CRDs (cleans up allocated/orphan pods)
-kubectl delete sandboxes --all -n "$ARL_NAMESPACE" --wait=false 2>/dev/null
-
-# Wait for all managed pods to terminate before proceeding
-echo "Waiting for all ARL pods to terminate..."
-while kubectl get pods -l app.kubernetes.io/managed-by=arl -n "$ARL_NAMESPACE" --no-headers 2>/dev/null | grep -q .; do
-    sleep 5
-done
-echo "Cleanup done."
-
 # ============ Start vLLM (skip for dry_run) ============
 if [ "$DRY_RUN" != "true" ]; then
     ensure_vllm
@@ -189,15 +160,14 @@ fi
 uv pip install swebench==4.1.0
 
 # ============ Run Evaluation ============
-uv run --no-sync python3 "$SCRIPT_DIR/scripts/swe_eval_standalone.py" \
+python3 "$SCRIPT_DIR/scripts/swe_eval_standalone.py" \
     --data "$DATA_FILE" \
     --n_samples "$N_SAMPLES" \
     --scaffold r2egym \
     --max_steps 100 \
     --max_prompt_length 131072 \
     --max_response_length 32768 \
-    --trajectory_timeout 1800 \
-    --n_parallel 50 \
+    --trajectory_timeout 1200 \
+    --n_parallel 512 \
     --output_dir "$OUTPUT_DIR" \
-    $EXTRA_ARGS \
-    > eval.log 2>&1
+    $EXTRA_ARGS

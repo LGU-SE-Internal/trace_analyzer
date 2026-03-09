@@ -1,43 +1,53 @@
+#!/bin/bash
+# SWE Setup Script
+# !It should be applied to all workers/nodes!
+# Usage: source swe-setup.sh [root]
+#
+# Examples:
+#   # Setup with default root directory
+#   source swe-setup.sh
+#
+#   # Setup with custom root directory
+#   source swe-setup.sh /mnt/bn/my-bucket
+
+
 pip install uv
-
-export UV_HTTP_TIMEOUT=300
-
 ROOT_DIR=${1:-'/mnt/bn/trae-research-models/xujunjielong'}
 
-your_k8s_config_path=$ROOT_DIR'/data/config'
-
 # IMPORTANT: if use BYTED cluster, set this to true
-use_byted_venv=true
+# Auto-detect BYTED cluster by checking ARNOLD_JOB_ID
+if [ -n "$ARNOLD_JOB_ID" ]; then
+    use_byted_venv=true
+else
+    use_byted_venv=false
+fi
+
+# It is important to set all env_var in all workers/nodes.
+export ARL_GATEWAY_URL="http://118.145.210.10:8080"
+export ARL_MIRROR_NAMESPACE="code"
 
 # BYTED: set proxy for connections to internet
 if [ "$use_byted_venv" = true ]; then
     export HF_ENDPOINT=https://hf-mirror.com
     export UV_INDEX_URL=https://bytedpypi.byted.org/simple/
-    export HTTP_PROXY=http://sys-proxy-rd-relay.byted.org:8118
     export http_proxy=http://sys-proxy-rd-relay.byted.org:8118
     export https_proxy=http://sys-proxy-rd-relay.byted.org:8118
+    export no_proxy="localhost,127.0.0.1"
 fi
 
-# uv venv setup (rllm+r2egym)
+# uv venv setup
 [ -d ".venv" ] || uv venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[verl]"
-# if use byted cluster, install bytedray and byted-wandb
-if [ "$use_byted_venv" = true ]; then
-    export UV_INDEX_URL=https://bytedpypi.byted.org/simple/
-    uv pip uninstall ray wandb bytedray byted-wandb
-    uv pip install bytedray[default,data,serve,bytedance] byted-wandb
-fi
-
-# install k8s (if not installed)
-if ! command -v kubectl &>/dev/null; then
-    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-    chmod +x ./kubectl
-    sudo mv ./kubectl /usr/local/bin/kubectl
-fi
-mkdir -p ~/.kube
-# BYTERD: copy k8s config
-cp $your_k8s_config_path ~/.kube/config
+### IMPORTANT: set PYTHONPATH in ray's env_args to .venv/lib/python3.11/site-packages to ensure ray workers can find the packages
 
 # Pre-cache the datasets
-uv run python3 scripts/data/swe_dataset.py --local_dir ./data/swe
+python3 scripts/data/swe_dataset.py --local_dir ./data/swe
+
+# ============ BYTERD ============
+# copy k8s config
+if [ "$use_byted_venv" = true ]; then
+    uv pip uninstall ray wandb bytedray byted-wandb
+    uv pip install bytedray[default,data,serve,bytedance]==2.10.0.34 byted-wandb
+    uv pip install "fastapi>=0.107.0,<0.113.0" # strange bug: bytedray, vllm, fastapi are not compatible
+fi

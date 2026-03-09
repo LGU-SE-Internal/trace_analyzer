@@ -4,7 +4,7 @@
 #
 # Usage: source scripts/patch_verl.sh
 
-uv run --no-sync python3 -c "
+python3 -c "
 import verl.utils.dataset.rl_dataset as m
 f = m.__file__
 with open(f, 'r') as file:
