@@ -539,26 +539,17 @@ class AgentExecutionEngine:
                         **kwargs,
                     )
                 except Exception as e:
-                    colorful_print(f"Trajectory {env_idx}: all retries exhausted, returning zeroed-out trajectory: {e}", "red")
-                    # Return a dummy zeroed-out result instead of crashing
+                    colorful_print(f"Trajectory {env_idx}: all retries exhausted, returning zeroed-out dummy trajectory: {e}", "red")
                     env = self.envs[env_idx]
                     if mode == "Token":
-                        # Create minimal token result with zeroed masks
-                        prompt_messages = getattr(self.agents[env_idx], 'chat_completions', None)
-                        if not prompt_messages:
-                            prompt_messages = [{"role": "user", "content": "placeholder"}]
-                        try:
-                            prompt_tokens, _ = convert_messages_to_tokens_and_masks(
-                                prompt_messages, tokenizer=self.tokenizer,
-                                parser=self.chat_parser, contains_first_msg=True,
-                                contains_generation_msg=True,
-                            )
-                        except Exception:
-                            prompt_tokens = [self.tokenizer.bos_token_id or 0]
+                        # Create a minimal dummy with correct tensor types and zeroed masks
+                        # so it contributes nothing to training but keeps batch size consistent.
+                        dummy_prompt = torch.tensor([self.tokenizer.bos_token_id or 0], dtype=torch.long)
+                        dummy_response = torch.tensor([self.tokenizer.eos_token_id or 0], dtype=torch.long)
                         result = {
-                            "prompt_tokens": prompt_tokens,
-                            "response_tokens": [self.tokenizer.eos_token_id],
-                            "response_masks": [0],
+                            "prompt_tokens": dummy_prompt,
+                            "response_tokens": dummy_response,
+                            "response_masks": torch.zeros(1, dtype=torch.long),
                             "trajectory_reward": 0.0,
                             "idx": env.idx,
                             "chat_completions": [],
