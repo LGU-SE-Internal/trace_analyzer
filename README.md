@@ -4,17 +4,78 @@ Fork of [rLLM](https://github.com/rllm-project/rllm) for training SWE agents via
 
 Key addition: **P2A** (Program-Analysis-based Process Advantage) — a sound process supervision method that uses call-graph analysis to give bonus rewards for fault localization steps during RL training.
 
-## ARL SDK
+## ARL Architecture
 
-All Docker container operations in this repo (sandbox creation, command execution, pod lifecycle) are built on the **ARL (Agent Runtime Layer) SDK** — no direct Docker or K8s API calls are made. ARL provides a Gateway HTTP API that manages WarmPool-backed sandbox pods on a K8s cluster.
+All sandbox operations in this repo are built on **ARL (Agent Runtime Layer)** — no direct Docker or K8s API calls are made. ARL provides a Gateway HTTP API backed by a K8s cluster.
 
-Core abstractions:
+Source code: Gateway + K8s controllers in `~/Documents/agent-env`, Python SDK in `.venv/lib/python3.11/site-packages/arl/`.
 
-- **`SandboxSession`** — High-level session manager. Creates a sandbox from a warm pool, executes commands synchronously, supports restore/reconnect.
-- **`GatewayClient`** — HTTP client to the ARL Gateway (configured via `ARL_GATEWAY_URL`).
-- **`WarmPoolManager`** — Creates and manages WarmPools (pre-provisioned pod replicas for fast sandbox startup).
+### Resource Hierarchy
 
-Client source code: `.venv/lib/python3.11/site-packages/arl/`
+```
+WarmPool (K8s CRD, persisted in etcd)
+│   Declares: image, replicas count, resource limits
+│   K8s controller maintains the desired number of pods
+│
+├── Pod-1 [Idle]        ← Fully running, containers Ready, waiting for assignment
+├── Pod-2 [Idle]
+├── Pod-3 [Allocated]   ← Bound to Sandbox-A
+│   ├── executor container    (user image + executor-agent process)
+│   └── sidecar container     (ARL platform, gRPC/HTTP interface)
+├── Pod-4 [Allocated]   ← Bound to Sandbox-B
+└── ...
+
+Sandbox (K8s CRD, persisted in etcd)
+│   Lifecycle: Pending → Bound → Ready → Deleted
+│   "Binding" = label an Idle pod as Allocated (no container restart)
+│   Deletion = pod is killed, WarmPool creates a new Idle pod to backfill
+│
+Session (Gateway in-memory only, NOT persisted)
+    A handle mapping session_id → Sandbox/Pod info (pod_ip, pod_name)
+    Created after Sandbox reaches Ready; lost if Gateway restarts
+```
+
+**Key points:**
+- Idle pods are **not** empty — they have all containers running and Ready. "Warm" means pre-initialized.
+- Sandbox is **not** a container — it is a logical claim on a pod. Binding only changes a pod label (`idle` → `allocated`).
+- Pods do **not** return to Idle after use. When a Sandbox is deleted, the pod is also deleted; WarmPool controller creates a fresh one.
+- Sessions exist **only** in Gateway process memory (`sync.Map`). If Gateway crashes/restarts, all session mappings are lost. Orphaned Sandboxes are cleaned up by the K8s idle timeout controller (default 600s).
+
+### Scaling Behavior
+
+| Direction | Trigger | Mechanism |
+|-----------|---------|-----------|
+| **Scale up** | `sessionCount + 1 > replicas` | Gateway's PoolManager patches WarmPool replicas (coalesced, 50ms batching) |
+| **Scale down** | `replicas > sessionCount + 1` sustained for 5 min | PoolManager reduces replicas in sweep loop (every 30s) |
+| **Pool GC** | Pool has 0 sessions for 10 min | PoolManager deletes the WarmPool CRD entirely |
+| **Sandbox GC** | No task execution for 600s | K8s SandboxReconciler deletes the Sandbox (and its pod) |
+
+### Client SDK
+
+| Class | Role |
+|-------|------|
+| `ManagedSession` | High-level session: auto-creates pool from `image` + `experiment_id`, calls `create_sandbox()` / `delete_sandbox()` |
+| `SandboxSession` | Lower-level: requires pre-existing `pool_ref` |
+| `GatewayClient` | HTTP client to Gateway (`ARL_GATEWAY_URL`). Endpoints: create/delete session, execute steps, manage pools/experiments |
+
+### Session Lifecycle (from this repo's perspective)
+
+```
+SWEEnv._create_session()
+  └─ ManagedSession(image=..., experiment_id=...)
+  └─ session.create_sandbox()
+       └─ POST /v1/managed/sessions  (blocks until pod Ready, up to 300s)
+       └─ On success: session._session_id = gateway-assigned ID
+       └─ On failure: session._session_id remains None
+
+SWEEnv.close()
+  └─ session.delete_sandbox()
+       └─ if _session_id is None: no-op (create never succeeded)
+       └─ DELETE /v1/sessions/{id}
+       └─ On failure: exception silently swallowed (except: pass)
+```
+
+This means: if `create_sandbox()` fails (timeout, 5xx), `_session_id` is never set, and `delete_sandbox()` becomes a safe no-op. No orphan is created client-side. However, if Gateway crashes **after** creating the Sandbox CRD but **before** returning the HTTP response, the Sandbox becomes an orphan that only K8s idle timeout can reclaim.
 
 ## Setup
 
