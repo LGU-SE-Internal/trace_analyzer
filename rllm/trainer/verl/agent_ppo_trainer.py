@@ -77,6 +77,11 @@ class AgentPPOTrainer(RayPPOTrainer):
         n_parallel_agents = engine_args.pop("n_parallel_agents", None) or self.config.data.train_batch_size * self.config.actor_rollout_ref.rollout.n
         print(f"n_parallel_agents: {n_parallel_agents}")
 
+        # Hint ManagedSession to eagerly scale the pool to rollout.n replicas,
+        # avoiding incremental scale-up under concurrent session creation.
+        if "max_replicas" not in self.env_args:
+            self.env_args["max_replicas"] = self.config.actor_rollout_ref.rollout.n
+
         self.agent_execution_engine = AsyncAgentExecutionEngine(
             rollout_engine=self.async_rollout_manager,
             config=self.config,

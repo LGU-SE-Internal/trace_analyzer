@@ -114,6 +114,7 @@ class SWEEnv(BaseEnv):
         gateway_url: str | None = None,
         namespace: str = "default",
         experiment_id: str | None = None,
+        max_replicas: int | None = None,
         verbose: bool = False,
         scaffold: str = "r2egym",
         normalize_pytest: bool = False,
@@ -141,6 +142,7 @@ class SWEEnv(BaseEnv):
         self.experiment_id = experiment_id or os.environ.get(
             "ARL_EXPERIMENT_ID", "default"
         )
+        self.max_replicas = max_replicas
         self.total_steps = 0
         self.verbose = verbose
         self.scaffold = scaffold
@@ -326,13 +328,16 @@ class SWEEnv(BaseEnv):
 
     def _create_session(self):
         """Create a new ARL sandbox session."""
-        self.session = ManagedSession(
+        kwargs = dict(
             image=self._image,
             experiment_id=self.experiment_id,
             namespace=self.namespace,
             gateway_url=self.gateway_url,
             timeout=max(self.reward_timeout, self.step_timeout) + 60,
         )
+        if self.max_replicas is not None:
+            kwargs["max_replicas"] = self.max_replicas
+        self.session = ManagedSession(**kwargs)
         self.session.create_sandbox()
 
     # =====================================================
@@ -434,8 +439,8 @@ class SWEEnv(BaseEnv):
         if session:
             try:
                 session.delete_sandbox()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[SWEEnv] Warning: delete_sandbox failed (session_id={session.session_id}): {e}")
 
     @staticmethod
     def from_dict(extra_info: dict | str) -> "SWEEnv":
