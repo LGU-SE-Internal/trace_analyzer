@@ -39,6 +39,7 @@ fi
 [ -d ".venv" ] || uv venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[verl]"
+uv pip install swebench==4.1.0
 ### IMPORTANT: set PYTHONPATH in ray's env_args to .venv/lib/python3.11/site-packages to ensure ray workers can find the packages
 
 # Pre-cache the datasets

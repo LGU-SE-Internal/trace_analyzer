@@ -31,9 +31,10 @@
 
 
 # ============ Arguments ============
-MODEL_NAME=${1:?'Usage: bash swe-eval-standalone.sh <model_name> [n_samples] [root_dir]'}
+MODEL_NAME=${1:?'Usage: source swe-eval-standalone.sh <model_name> [n_samples] [root_dir]'}
 N_SAMPLES=${2:-1}
 ROOT_DIR=${3:-'/mnt/bn/trae-research-models/xujunjielong'}
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-eval}"
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
 
@@ -157,8 +158,6 @@ if [ -n "$MAX_TASKS" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --max_tasks $MAX_TASKS"
 fi
 
-uv pip install swebench==4.1.0
-
 # ============ Run Evaluation ============
 python3 "$SCRIPT_DIR/scripts/swe_eval_standalone.py" \
     --data "$DATA_FILE" \
@@ -168,6 +167,8 @@ python3 "$SCRIPT_DIR/scripts/swe_eval_standalone.py" \
     --max_prompt_length 131072 \
     --max_response_length 32768 \
     --trajectory_timeout 1200 \
-    --n_parallel 512 \
+    --n_parallel 64 \
     --output_dir "$OUTPUT_DIR" \
     $EXTRA_ARGS
+
+pkill -f "vllm"

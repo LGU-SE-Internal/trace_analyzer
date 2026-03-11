@@ -1,38 +1,28 @@
 #!/bin/bash
 # SWE SFT Training Script
-# Usage: bash swe-train-sft.sh <model> [root]
+# Usage: source swe-train-sft.sh <model> [root]
 #
 # Examples:
 #   # Train SFT from base model
-#   bash swe-train-sft.sh Qwen3-8B
+#   source swe-train-sft.sh Qwen3-8B
 #
 #   # Train with custom root directory
-#   bash swe-train-sft.sh Qwen3-8B /mnt/bn/my-bucket
+#   source swe-train-sft.sh Qwen3-8B /mnt/bn/my-bucket
 
 set -x
 
 # ============ Arguments ============
-MODEL_NAME=${1:?'Usage: bash swe-train-sft.sh <model_name> [root_dir]'}
+MODEL_NAME=${1:?'Usage: source dummy.sh <model_name> [root_dir]'}
 ROOT_DIR=${2:-'/mnt/bn/trae-research-models/xujunjielong'}
 
 # ============ Environment ============
 export GLOO_SOCKET_IFNAME='eth0'
 export NCCL_SOCKET_IFNAME='eth0'
 
-export UV_INDEX_URL=https://bytedpypi.byted.org/simple/
-
-export HTTP_PROXY=http://sys-proxy-rd-relay.byted.org:8118
-export http_proxy=http://sys-proxy-rd-relay.byted.org:8118
-export https_proxy=http://sys-proxy-rd-relay.byted.org:8118
-
 # ============ Config ============
 WAND_PROJECT='xujunjielong'
 EXPERIMENT_NAME='dummy'
 LR=1e-5
-
-# ============ Byted env ============
-uv pip uninstall ray wandb bytedray byted-wandb
-uv pip install bytedray[default,data,serve,bytedance] byted-wandb
 
 # ============ Distributed training (compatible with 1~N nodes) ============
 NNODES=${ARNOLD_WORKER_NUM:-1}
@@ -45,7 +35,7 @@ else
 fi
 
 # ============ Run Training ============
-uv run --no-sync torchrun \
+torchrun \
     $TORCHRUN_ARGS \
     -m verl.trainer.fsdp_sft_trainer \
     data.train_files=data/swe/R2EGym_SFT_Trajectories.parquet \
@@ -63,7 +53,7 @@ uv run --no-sync torchrun \
     trainer.default_local_dir=$ROOT_DIR/experiments/verl/$EXPERIMENT_NAME \
     trainer.project_name=$WAND_PROJECT \
     trainer.experiment_name=$EXPERIMENT_NAME \
-    trainer.logger="['console','wandb']" \
+    trainer.logger="['console']" \
     ulysses_sequence_parallel_size=8 \
     use_remove_padding=true \
     > $EXPERIMENT_NAME.log 2>&1

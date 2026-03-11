@@ -11,10 +11,8 @@
 #   # Train with custom root directory
 #   source swe-train-sft.sh Qwen3-8B /mnt/bn/my-bucket
 
-source .venv/bin/activate
-
 # ============ Arguments ============
-MODEL_NAME=${1:?'Usage: bash swe-train-sft.sh <model_name> [root_dir]'}
+MODEL_NAME=${1:?'Usage: source swe-train-sft.sh <model_name> [root_dir]'}
 ROOT_DIR=${2:-'/mnt/bn/trae-research-models/xujunjielong'}
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-sft}"
 NNODES=${ARNOLD_WORKER_NUM:-1}

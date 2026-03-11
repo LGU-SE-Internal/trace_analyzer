@@ -24,11 +24,12 @@
 #   MODEL_PATH_OVERRIDE=/path/to/sft/checkpoint EXPERIMENT_NAME=sft-rloo source swe-train-rl.sh Qwen3-8B
 
 # ============ Arguments ============
-MODEL_NAME=${1:?'Usage: bash swe-train-rl.sh <model_name> [root_dir]'}
+MODEL_NAME=${1:?'Usage: source swe-train-rl.sh <model_name> [root_dir]'}
 ROOT_DIR=${2:-'/mnt/bn/trae-research-models/xujunjielong'}
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-rl}"
 NNODES=${ARNOLD_WORKER_NUM:-1}
 BS_PER_NODE=${BS_PER_NODE:-32}
+GD_PER_STEP=${GD_PER_STEP:-2}
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
 
@@ -100,7 +101,7 @@ python3 -m rllm.trainer.verl.train_agent_ppo \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=true \
     actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-sum \
-    actor_rollout_ref.actor.ppo_mini_batch_size=$((BS_PER_NODE * NNODES)) \
+    actor_rollout_ref.actor.ppo_mini_batch_size=$((BS_PER_NODE / GD_PER_STEP * NNODES)) \
     actor_rollout_ref.actor.use_dynamic_bsz=false \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=true \
@@ -144,12 +145,14 @@ python3 -m rllm.trainer.verl.train_agent_ppo \
     rllm.agent.name=sweagent \
     rllm.agent.max_steps=50 \
     rllm.agent.overlong_filter=true \
-    rllm.agent.trajectory_timeout=1200 \
+    rllm.agent.trajectory_timeout=300 \
     +rllm.env.env_args.verbose=false \
     +rllm.env.env_args.scaffold=r2egym \
     +rllm.agent.agent_args.scaffold=r2egym \
     +rllm.agent.engine_args.n_parallel_agents=$((64 * NNODES)) \
-    trainer.total_epochs=1000 \
+    trainer.total_epochs=15 \
     $P2A_OVERRIDES
 
 # please keep `n_parallel_agents` on each node to be small to optimize KV cache utilization.
+# to merge rl checkpoints, use:
+# python3 -m verl.model_merger merge --backend fsdp --local_dir $CKPT_PATH/global_step_$STEP/actor --target_dir $MODEL_PATH
