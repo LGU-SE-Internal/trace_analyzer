@@ -12,7 +12,6 @@
 
 
 pip install uv
-ROOT_DIR=${1:-'/mnt/bn/trae-research-models/xujunjielong'}
 
 # IMPORTANT: if use BYTED cluster, set this to true
 # Auto-detect BYTED cluster by checking ARNOLD_JOB_ID
@@ -28,8 +27,7 @@ export ARL_MIRROR_NAMESPACE="code"
 
 # BYTED: set proxy for connections to internet
 if [ "$use_byted_venv" = true ]; then
-    export HF_ENDPOINT=https://hf-mirror.com
-    export UV_INDEX_URL=https://bytedpypi.byted.org/simple/
+    export UV_HTTP_TIMEOUT=300
     export http_proxy=http://sys-proxy-rd-relay.byted.org:8118
     export https_proxy=http://sys-proxy-rd-relay.byted.org:8118
     export no_proxy="localhost,127.0.0.1"
@@ -49,6 +47,6 @@ python3 scripts/data/swe_dataset.py --local_dir ./data/swe
 # copy k8s config
 if [ "$use_byted_venv" = true ]; then
     uv pip uninstall ray wandb bytedray byted-wandb
-    uv pip install bytedray[default,data,serve,bytedance]==2.10.0.34 byted-wandb
+    uv pip install bytedray[default,data,serve,bytedance]==2.10.0.34 byted-wandb --index-url https://bytedpypi.byted.org/simple/
     uv pip install "fastapi>=0.107.0,<0.113.0" # strange bug: bytedray, vllm, fastapi are not compatible
 fi
