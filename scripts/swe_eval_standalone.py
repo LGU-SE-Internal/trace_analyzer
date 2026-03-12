@@ -207,7 +207,7 @@ async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output
     from rllm.environments.swe.reward import run_tests_with_output
     from rllm.environments.swe.trace import (
         aggregate_traces,
-        extract_non_test_patch,
+        find_modified_callables_from_task,
         instrument_sandbox,
         parse_fault_traces,
     )
@@ -227,14 +227,14 @@ async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output
         try:
             env.reset()
 
-            # Instrument sandbox for fault tracing (works for both datasets)
-            patch_text = extract_non_test_patch(task)
+            # Discover modified callables from patch, then instrument sandbox
             modified_callables = []
-            if patch_text:
-                try:
-                    modified_callables = instrument_sandbox(env, patch_text)
-                except Exception as e:
-                    logger.warning(f"Fault trace instrumentation failed: {e}")
+            try:
+                modified_callables = find_modified_callables_from_task(task)
+                if modified_callables:
+                    modified_callables = instrument_sandbox(env, modified_callables)
+            except Exception as e:
+                logger.warning(f"Fault trace instrumentation failed: {e}")
 
             reward, raw_output = run_tests_with_output(
                 session=env.session,
@@ -320,10 +320,10 @@ def run_agent_eval(args, tasks):
         engine_name="openai",
         tokenizer=tokenizer,
         sampling_params={
-            "model": args.model,
             "temperature": args.temperature,
         },
         rollout_engine_args={
+            "model": args.model,
             "base_url": args.base_url,
             "api_key": args.api_key,
         },

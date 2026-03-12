@@ -16,7 +16,7 @@ MODEL_NAME=${1:?'Usage: source swe-train-sft.sh <model_name> [root_dir]'}
 ROOT_DIR=${2:-'/mnt/bn/trae-research-models/xujunjielong'}
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-sft}"
 NNODES=${ARNOLD_WORKER_NUM:-1}
-BS_PER_NODE=${BS_PER_NODE:-32}
+BS_PER_NODE=${BS_PER_NODE:-256}
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
 

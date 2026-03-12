@@ -54,6 +54,11 @@ VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:${VLLM_PORT}/v1}"
 VLLM_TP="${VLLM_TP:-8}"
 MODEL_PATH="$ROOT_DIR/models/$MODEL_NAME"
 
+# Match veRL's formula: max_model_len = prompt_length + response_length
+# (see verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py:195)
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-163840}"  # 131072 + 32768
+export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+
 # Check if vLLM is already serving the requested model.
 # Returns 0 if the model is being served, 1 otherwise.
 check_vllm_serving_model() {
@@ -87,6 +92,7 @@ start_vllm() {
     VLLM_USE_V1=1 uv run --no-sync vllm serve "$MODEL_PATH" \
         --port "$VLLM_PORT" \
         --tensor-parallel-size "$VLLM_TP" \
+        --max-model-len "$VLLM_MAX_MODEL_LEN" \
         &>"$OUTPUT_DIR/vllm.log" &
     local pid=$!
     echo "vLLM server starting (pid $pid), waiting for it to be ready..."
