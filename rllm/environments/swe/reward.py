@@ -111,21 +111,21 @@ def _run_in_session(
         shell_cmd = (
             f"source /opt/miniconda3/bin/activate && "
             f"conda activate testbed && "
-            f"timeout {timeout} {cmd}"
+            f"{cmd}"
         )
         step = {
             "name": "reward_cmd",
             "command": ["bash", "-c", shell_cmd],
             "workDir": workdir,
-            "timeout": timeout + 10,
+            "timeout": timeout,
         }
     else:
         step = {
             "name": "reward_cmd",
-            "command": ["bash", "-c", f"timeout {timeout} {cmd}"],
+            "command": ["bash", "-c", cmd],
             "env": {"PATH": DOCKER_PATH},
             "workDir": workdir,
-            "timeout": timeout + 10,
+            "timeout": timeout,
         }
 
     response = session.execute(steps=[step])

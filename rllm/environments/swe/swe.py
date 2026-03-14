@@ -197,22 +197,22 @@ class SWEEnv(BaseEnv):
             shell_cmd = (
                 f"source /opt/miniconda3/bin/activate && "
                 f"conda activate testbed && "
-                f"timeout {timeout} {cmd}"
+                f"{cmd}"
             )
             step = {
                 "name": f"cmd_{self._cmd_counter}",
                 "command": ["bash", "-c", shell_cmd],
                 "workDir": workdir,
-                "timeout": timeout + 10,
+                "timeout": timeout,
             }
         else:
             # R2E-Gym: PATH-based activation (matches R2E-Gym DOCKER_PATH)
             step = {
                 "name": f"cmd_{self._cmd_counter}",
-                "command": ["bash", "-c", f"timeout {timeout} {cmd}"],
+                "command": ["bash", "-c", cmd],
                 "env": {"PATH": DOCKER_PATH},
                 "workDir": workdir,
-                "timeout": timeout + 10,
+                "timeout": timeout,
             }
 
         response = self.session.execute(steps=[step])
@@ -441,6 +441,11 @@ class SWEEnv(BaseEnv):
                 session.delete_sandbox()
             except Exception as e:
                 print(f"[SWEEnv] Warning: delete_sandbox failed (session_id={session.session_id}): {e}")
+            finally:
+                try:
+                    session.close()
+                except Exception as e:
+                    print(f"[SWEEnv] Warning: session.close failed (session_id={session.session_id}): {e}")
 
     @staticmethod
     def from_dict(extra_info: dict | str) -> "SWEEnv":
