@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=64,<70", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -21,7 +21,7 @@ dependencies = [
     # Core ML/AI packages
     "torch",
     "torchvision",
-    "transformers>=4.55.0,<=4.56.2",
+    "transformers>=4.55.0,<=5.0.0",
     # Data processing
     "datasets>=2.20.0",
     "pandas",
@@ -66,11 +66,20 @@ dev = [
     "pymdown-extensions>=10.0.0",
 ]
 
-verl = [
+verl-vllm = [
     "verl==0.6.1",
     "torch>=2.8.0",
     "torchvision>=0.23.0",
     "vllm>=0.10.2,<=0.11.0",
+    "flash-attn>=2.8.1",
+    "qwen-vl-utils",
+]
+
+verl-sglang = [
+    "verl==0.6.1",
+    "torch>=2.8.0",
+    "torchvision>=0.23.0",
+    "sglang[all]>=0.5.2,<=0.5.3",
     "flash-attn>=2.8.1",
     "qwen-vl-utils",
 ]
