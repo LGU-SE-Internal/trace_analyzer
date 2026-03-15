@@ -388,6 +388,13 @@ class AgentExecutionEngine:
         compute_trajectory_reward(trajectory)
         compute_mc_return(trajectory, gamma=self.gamma)
         trajectory.info["termination_reason"] = termination_reason
+        trajectory.info["metrics"] = {
+            "steps": len(trajectory.steps),
+            "reward_time": reward_time,
+            "env_time": env_time,
+            "llm_time": llm_time,
+            "total_time": total_time,
+        }
 
         if mode == "Text":
             return trajectory

@@ -3,13 +3,23 @@
 # !It should be applied to all workers/nodes!
 # Usage: source swe-setup.sh [root]
 #
+# ── Rollout engine ─────────────────────────────────────────────────────────
+#   ROLLOUT_ENGINE=vllm   (default) — install verl-vllm extra
+#   ROLLOUT_ENGINE=sglang            — install verl-sglang extra
+#
 # Examples:
-#   # Setup with default root directory
+#   # Setup with default root directory (vLLM)
 #   source swe-setup.sh
+#
+#   # Setup with SGLang
+#   ROLLOUT_ENGINE=sglang source swe-setup.sh
 #
 #   # Setup with custom root directory
 #   source swe-setup.sh /mnt/bn/my-bucket
 
+
+# Rollout engine selection
+export ROLLOUT_ENGINE="${ROLLOUT_ENGINE:-sglang}"
 
 pip install uv
 
@@ -36,7 +46,7 @@ fi
 # uv venv setup
 [ -d ".venv" ] || uv venv --python 3.11
 source .venv/bin/activate
-uv pip install -e ".[verl]"
+uv pip install -e ".[verl-${ROLLOUT_ENGINE}]"
 uv pip install swebench==4.1.0
 ### IMPORTANT: set PYTHONPATH in ray's env_args to .venv/lib/python3.11/site-packages to ensure ray workers can find the packages
 

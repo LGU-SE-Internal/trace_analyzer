@@ -38,10 +38,14 @@ uv pip install -e .[tinker] --torch-backend=cpu
 
 To train with `verl` on a GPU-equipped machine with CUDA 12.8, run:
 ```bash
-uv pip install -e .[verl] --torch-backend=cu128
+# vLLM rollout (default)
+uv pip install -e .[verl-vllm] --torch-backend=cu128
+
+# Or SGLang rollout
+uv pip install -e .[verl-sglang] --torch-backend=cu128
 ```
 
-> The `verl` extra installs vLLM by default. If you'd rather use SGLang to sample rollouts, you can install it with `uv pip install sglang --torch-backend=cu128`.
+> The `verl-vllm` and `verl-sglang` extras are **mutually exclusive** — pick one per environment.
 
 > rLLM with verl supports alternative hardware accelerators, including AMD ROCm and Huawei Ascend. For these platforms, we strongly recommend installing rLLM on top of verl's official Docker containers for ROCm ([here](https://github.com/volcengine/verl/tree/main/docker/rocm)) and Ascend ([here](https://github.com/volcengine/verl/tree/main/docker/ascend)).
 
@@ -81,7 +85,7 @@ While rLLM can also be installed without `uv` (i.e., just using `pip`), it is no
 ```bash
 conda create -n rllm python=3.11
 conda activate rllm
-pip install -e .[verl]
+pip install -e .[verl-vllm]
 ```
 
 ## Installation with Docker 🐳

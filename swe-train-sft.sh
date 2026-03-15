@@ -2,17 +2,17 @@
 # SWE SFT Training Script
 # Main entry script with Ray.
 # Run swe-setup.sh first.
-# Usage: source swe-train-sft.sh <model> [root]
+# Usage: bash swe-train-sft.sh <model> [root]
 #
 # Examples:
 #   # Train SFT from base model
-#   source swe-train-sft.sh Qwen3-8B
+#   bash swe-train-sft.sh Qwen3-8B
 #
 #   # Train with custom root directory
-#   source swe-train-sft.sh Qwen3-8B /mnt/bn/my-bucket
+#   bash swe-train-sft.sh Qwen3-8B /mnt/bn/my-bucket
 
 # ============ Arguments ============
-MODEL_NAME=${1:?'Usage: source swe-train-sft.sh <model_name> [root_dir]'}
+MODEL_NAME=${1:?'Usage: bash swe-train-sft.sh <model_name> [root_dir]'}
 ROOT_DIR=${2:-'/mnt/bn/trae-research-models/xujunjielong'}
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-sft}"
 NNODES=${ARNOLD_WORKER_NUM:-1}
@@ -21,7 +21,7 @@ FINAL_STEP=${FINAL_STEP:-200}
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
 
-source scripts/clear_arl.sh
+bash scripts/clear_arl.sh
 
 # ============ Environment ============
 export GLOO_SOCKET_IFNAME='eth0'

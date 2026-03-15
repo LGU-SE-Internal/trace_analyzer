@@ -1,0 +1,2115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SWE Agent Trajectory Analyzer</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #242837;
+  --border: #2e3348;
+  --text: #e1e4ed;
+  --text-dim: #8b90a5;
+  --accent: #6c8cff;
+  --accent2: #4ecdc4;
+  --green: #4ade80;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --orange: #fb923c;
+  --purple: #a78bfa;
+  --pink: #f472b6;
+  --cyan: #22d3ee;
+  --radius: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace; background:var(--bg); color:var(--text); font-size:13px; line-height:1.5; }
+button { font-family:inherit; cursor:pointer; border:none; font-size:13px; }
+input, select { font-family:inherit; font-size:13px; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:6px 10px; }
+input:focus, select:focus { outline:none; border-color:var(--accent); }
+
+.app { display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+.header { padding:10px 20px; background:var(--surface); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; flex-shrink:0; }
+.header h1 { font-size:15px; font-weight:600; color:var(--accent); }
+.header .version { font-size:11px; color:var(--text-dim); }
+
+/* Tabs */
+.tabs { display:flex; gap:2px; background:var(--bg); padding:0 20px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.tab { padding:9px 18px; color:var(--text-dim); background:transparent; border-bottom:2px solid transparent; transition:all .15s; }
+.tab:hover { color:var(--text); }
+.tab.active { color:var(--accent); border-bottom-color:var(--accent); background:var(--surface); }
+
+/* Tab containers */
+.tab-pane { display:flex; flex-direction:column; flex:1; overflow:hidden; }
+.tab-pane.hidden { display:none !important; }
+
+/* Load bar */
+.load-bar { padding:10px 20px; background:var(--surface); border-bottom:1px solid var(--border); display:flex; gap:10px; align-items:center; flex-wrap:wrap; flex-shrink:0; }
+.load-bar label { color:var(--text-dim); font-size:11px; white-space:nowrap; }
+.load-btn { background:var(--accent); color:#fff; padding:5px 14px; border-radius:var(--radius); font-weight:500; }
+.load-btn:hover { opacity:.85; }
+.load-btn.sec { background:var(--surface2); border:1px solid var(--border); color:var(--text); }
+.file-pick { position:relative; display:inline-block; }
+.file-pick input[type=file] { position:absolute; opacity:0; width:100%; height:100%; cursor:pointer; top:0;left:0; }
+.file-pick .lbl { padding:5px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius); display:inline-block; cursor:pointer; font-size:12px; white-space:nowrap; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+.file-pick .lbl:hover { border-color:var(--accent); }
+.load-status { font-size:11px; color:var(--accent2); }
+.load-sep { width:1px; height:24px; background:var(--border); }
+
+/* Content */
+.content { flex:1; overflow:auto; padding:20px; }
+
+/* Cards */
+.cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px,1fr)); gap:12px; margin-bottom:20px; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; }
+.card .clabel { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; margin-bottom:4px; }
+.card .cvalue { font-size:22px; font-weight:700; }
+.card .csub { font-size:11px; color:var(--text-dim); margin-top:2px; }
+
+/* Charts */
+.charts-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(420px,1fr)); gap:16px; margin-bottom:20px; }
+.chart-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; }
+.chart-box h3 { font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text); }
+.chart-box svg { width:100%; }
+
+/* Table */
+.tbl-controls { display:flex; gap:10px; margin-bottom:10px; flex-wrap:wrap; align-items:center; }
+.tbl-wrap { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:auto; max-height:400px; }
+table { width:100%; border-collapse:collapse; }
+th { position:sticky; top:0; background:var(--surface2); padding:8px 12px; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--text-dim); cursor:pointer; user-select:none; border-bottom:1px solid var(--border); white-space:nowrap; }
+th:hover { color:var(--accent); }
+th.sorted-asc::after { content:' ▲'; color:var(--accent); }
+th.sorted-desc::after { content:' ▼'; color:var(--accent); }
+td { padding:6px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
+tr:hover td { background:var(--surface2); }
+tr.clickable { cursor:pointer; }
+
+/* Badges */
+.badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:500; }
+.bg { background:rgba(74,222,128,.15); color:var(--green); }
+.br { background:rgba(248,113,113,.15); color:var(--red); }
+.by { background:rgba(251,191,36,.15); color:var(--yellow); }
+.bb { background:rgba(108,140,255,.15); color:var(--accent); }
+
+/* ── INSPECTOR ─────────────────────────────────────────── */
+.insp-wrap { display:flex; flex-direction:column; gap:10px; }
+
+/* Header row */
+.insp-header { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 16px; display:flex; gap:20px; flex-wrap:wrap; align-items:center; flex-shrink:0; }
+.insp-header .fld .flbl { font-size:10px; color:var(--text-dim); text-transform:uppercase; }
+.insp-header .fld .fval { font-size:14px; font-weight:600; }
+
+/* Summary panels */
+.insp-summary { display:grid; grid-template-columns: 2fr 1.2fr 1.2fr 1fr 1fr; gap:10px; flex-shrink:0; }
+@media (max-width:1200px) { .insp-summary { grid-template-columns: 1fr 1fr 1fr; } }
+.sum-panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px; }
+.sum-panel h4 { font-size:11px; color:var(--text-dim); text-transform:uppercase; margin-bottom:8px; }
+.action-strip { display:flex; gap:2px; flex-wrap:wrap; }
+.action-block { width:14px; height:14px; border-radius:2px; cursor:pointer; flex-shrink:0; }
+.action-block:hover { opacity:.75; }
+.action-block.selected-step { outline:2px solid white; }
+.files-list { font-size:11px; }
+.files-list li { padding:1px 0; color:var(--text-dim); list-style:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pattern-tags { display:flex; flex-wrap:wrap; gap:4px; }
+
+/* Body: step-list + detail */
+.insp-body { display:grid; grid-template-columns:320px 1fr; gap:10px; flex:1; min-height:0; }
+@media (max-width:900px) { .insp-body { grid-template-columns:1fr; } }
+
+/* Step list (left column) */
+.step-list { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow-y:auto; }
+.step-row { display:flex; align-items:center; gap:6px; padding:7px 10px; border-bottom:1px solid var(--border); cursor:pointer; border-left:3px solid transparent; transition:background .1s; }
+.step-row:hover { background:var(--surface2); }
+.step-row.selected { background:var(--surface2); border-left-color:var(--accent); }
+.step-row.s-success { border-left-color:var(--green); }
+.step-row.s-error { border-left-color:var(--red); }
+.step-row.s-warning { border-left-color:var(--yellow); }
+.step-row.selected.s-success { border-left-color:var(--accent); }
+.step-row.selected.s-error { border-left-color:var(--accent); }
+.step-num { font-size:11px; color:var(--text-dim); min-width:32px; }
+.step-tool-badge { padding:1px 6px; border-radius:3px; font-size:10px; font-weight:600; white-space:nowrap; flex-shrink:0; }
+.step-file { font-size:10px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
+.step-icons { display:flex; gap:2px; flex-shrink:0; font-size:12px; }
+
+/* Step detail (right column) */
+.step-detail { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow-y:auto; }
+.step-detail-empty { display:flex; align-items:center; justify-content:center; height:200px; color:var(--text-dim); }
+.step-detail-content { padding:14px; }
+.sd-header { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; padding-bottom:10px; border-bottom:1px solid var(--border); }
+.sd-section { margin-bottom:14px; }
+.sd-section-title { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.4px; margin-bottom:6px; cursor:pointer; user-select:none; display:flex; align-items:center; gap:6px; }
+.sd-section-title::before { content:'▼'; font-size:9px; }
+.sd-section-title.collapsed::before { content:'▶'; }
+.sd-section-body { background:var(--bg); border-radius:4px; padding:10px; max-height:350px; overflow:auto; white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.45; }
+.sd-section-body.think-body { color:var(--text-dim); font-style:italic; }
+.sd-section.collapsed .sd-section-body { display:none; }
+.diff-old { background:rgba(248,113,113,.15); color:var(--red); }
+.diff-new { background:rgba(74,222,128,.15); color:var(--green); }
+
+/* Unified diff view */
+.diff-view { font-size:11px; line-height:1.55; border-radius:4px; overflow:auto; max-height:420px; border:1px solid var(--border); background:var(--bg); }
+.diff-line { display:flex; white-space:pre; min-width:0; }
+.diff-line-del { background:rgba(248,113,113,.18); color:var(--red); }
+.diff-line-ins { background:rgba(74,222,128,.18); color:var(--green); }
+.diff-line-ctx { color:var(--text-dim); }
+.diff-gutter { min-width:20px; text-align:center; flex-shrink:0; user-select:none; opacity:.75; border-right:1px solid var(--border); margin-right:8px; padding:0 3px; }
+.diff-line-del .diff-gutter { border-right-color:rgba(248,113,113,.3); }
+.diff-line-ins .diff-gutter { border-right-color:rgba(74,222,128,.3); }
+.diff-hunk-sep { color:var(--accent); background:rgba(108,140,255,.07); padding:2px 8px; font-size:10px; border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
+.diff-line-text { overflow:hidden; text-overflow:ellipsis; flex:1; padding-right:8px; }
+
+/* Golden patch highlighting — 4 levels */
+/* view-file: agent viewed a golden file (blue) */
+.step-row.gm-view-file     { background:rgba(108,140,255,.09) !important; border-left-color:var(--accent) !important; }
+/* view-callable: agent viewed the exact golden callable — LOCALIZATION (cyan) */
+.step-row.gm-view-callable { background:rgba(34,211,238,.14) !important; border-left-color:var(--cyan) !important; outline:1px solid rgba(34,211,238,.35); outline-offset:-1px; }
+/* edit-file: agent edited a golden file (yellow) */
+.step-row.gm-edit-file     { background:rgba(251,191,36,.09) !important; border-left-color:var(--yellow) !important; }
+/* edit-callable: agent edited the golden callable — MODIFICATION (orange, strongest) */
+.step-row.gm-edit-callable { background:rgba(251,146,60,.16) !important; border-left-color:var(--orange) !important; outline:1px solid rgba(251,146,60,.35); outline-offset:-1px; }
+
+.action-block.gm-view-file     { outline:2px solid var(--accent)  !important; outline-offset:1px; }
+.action-block.gm-view-callable { outline:2px solid var(--cyan)    !important; outline-offset:2px; box-shadow:0 0 5px rgba(34,211,238,.5); }
+.action-block.gm-edit-file     { outline:2px solid var(--yellow)  !important; outline-offset:1px; }
+.action-block.gm-edit-callable { outline:2px solid var(--orange)  !important; outline-offset:2px; box-shadow:0 0 5px rgba(251,146,60,.5); }
+
+.sd-golden-banner { background:rgba(34,211,238,.08); border:1px solid rgba(34,211,238,.35); border-radius:4px; padding:7px 10px; font-size:11px; color:var(--cyan); margin-bottom:10px; line-height:1.6; }
+.sd-golden-banner.edit { background:rgba(251,146,60,.08); border-color:rgba(251,146,60,.35); color:var(--orange); }
+.sd-golden-banner code { color:var(--text-dim); font-size:10px; }
+.golden-btn { padding:4px 10px; border-radius:var(--radius); background:var(--surface2); border:1px solid var(--border); color:var(--text-dim); font-size:12px; transition:all .15s; white-space:nowrap; }
+.golden-btn.loaded  { border-color:var(--yellow); color:var(--yellow); cursor:pointer; }
+.golden-btn.active  { background:rgba(34,211,238,.15); border-color:var(--cyan); color:var(--cyan); cursor:pointer; }
+
+/* Localization stats panel */
+.loc-stats { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; margin:16px 0; }
+.loc-stats h3 { font-size:13px; margin-bottom:12px; color:var(--text); }
+.loc-bar { display:flex; height:8px; border-radius:4px; overflow:hidden; margin:8px 0 12px; }
+.loc-table { width:100%; border-collapse:collapse; font-size:12px; }
+.loc-table td,.loc-table th { padding:5px 10px; border-bottom:1px solid var(--border); }
+.loc-table th { color:var(--text-dim); font-weight:normal; text-align:left; }
+.loc-table .num { text-align:right; font-variant-numeric:tabular-nums; }
+.loc-table .pct { text-align:right; color:var(--text-dim); font-size:11px; }
+.loc-table tr.sub td { padding-left:24px; color:var(--text-dim); }
+.loc-table tr.total td { border-top:1px solid var(--border); font-weight:600; padding-top:8px; }
+
+/* Tool colors */
+.tc-file_editor { background:rgba(108,140,255,.25); color:var(--accent); }
+.tc-str_replace_editor { background:rgba(108,140,255,.25); color:var(--accent); }
+.tc-execute_bash { background:rgba(74,222,128,.25); color:var(--green); }
+.tc-search { background:rgba(251,191,36,.25); color:var(--yellow); }
+.tc-finish { background:rgba(164,139,250,.25); color:var(--purple); }
+.tc-submit { background:rgba(164,139,250,.25); color:var(--purple); }
+.tc-unknown { background:rgba(139,144,165,.2); color:var(--text-dim); }
+
+/* Comparison */
+.comp-exp-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; flex:1; min-width:260px; }
+.comp-exp-box h4 { font-size:12px; margin-bottom:10px; color:var(--text); }
+.comp-mode-row { display:flex; gap:6px; margin-bottom:8px; align-items:center; }
+.comp-table td, .comp-table th { padding:6px 10px; }
+.comp-table .dpos { color:var(--green); }
+.comp-table .dneg { color:var(--red); }
+
+/* SVG */
+.chart-bar { transition:opacity .15s; }
+.chart-bar:hover { opacity:.8; }
+.chart-label { fill:var(--text-dim); font-size:11px; font-family:inherit; }
+.chart-value { fill:var(--text); font-size:11px; font-family:inherit; }
+.chart-axis { stroke:var(--border); stroke-width:1; }
+.chart-grid { stroke:var(--border); stroke-width:0.5; stroke-dasharray:4,4; }
+
+/* Misc */
+.loading { display:flex; align-items:center; justify-content:center; padding:60px; color:var(--text-dim); }
+.loading::before { content:''; width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; margin-right:10px; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:var(--text-dim); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <h1>SWE Trajectory Analyzer</h1>
+    <span class="version">v1.3</span>
+    <div style="flex:1;"></div>
+  </div>
+  <div class="tabs">
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="inspector">Trajectory Inspector</button>
+    <button class="tab" data-tab="comparison">Experiment Comparison</button>
+  </div>
+
+  <!-- ── Tab: Dashboard ──────────────────────────── -->
+  <div id="tab-dashboard" class="tab-pane">
+    <div class="load-bar">
+      <label>Experiment directory:</label>
+      <div class="file-pick">
+        <input type="file" id="dir-input" webkitdirectory>
+        <span class="lbl" id="dir-label">Select folder…</span>
+      </div>
+      <span class="load-status" id="load-status"></span>
+      <span style="color:var(--border);margin:0 4px;">|</span>
+      <label style="color:var(--text-dim);font-size:12px;">Golden Patches:</label>
+      <div class="file-pick">
+        <input type="file" id="golden-file-input" accept=".json">
+        <span class="lbl" id="golden-file-label">Load golden_patches.json…</span>
+      </div>
+      <button id="golden-toggle-btn" class="golden-btn" title="Toggle golden patch analysis (load golden_patches.json first)">✨ Golden Patch</button>
+      <span style="font-size:12px;color:var(--text-dim);" id="golden-load-status"></span>
+    </div>
+    <div class="content" id="dashboard-content">
+      <div class="loading" id="dashboard-loading" style="display:none">Loading and parsing data...</div>
+      <div id="dashboard-empty" style="padding:40px;text-align:center;color:var(--text-dim);">
+        Click <strong>Select folder…</strong> and choose an experiment directory (e.g. <code>Qwen3-8B/</code>).<br>
+        The analyzer will automatically find <code>*_n1.jsonl</code> and <code>chat_completions/eval.jsonl</code>.
+      </div>
+      <div id="dashboard-results" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Inspector ──────────────────────────── -->
+  <div id="tab-inspector" class="tab-pane hidden">
+    <div class="load-bar">
+      <label>Trajectory:</label>
+      <select id="traj-selector" style="min-width:340px;"><option value="">-- Load data first --</option></select>
+      <input type="text" id="traj-search" placeholder="Filter by instance_id…" style="width:200px;">
+      <span style="color:var(--border);margin:0 4px;">|</span>
+      <label style="color:var(--text-dim);font-size:12px;">Completion JSONL:</label>
+      <div class="file-pick">
+        <input type="file" id="completion-file-input" accept=".jsonl,.json">
+        <span class="lbl" id="completion-file-label">Import completions…</span>
+      </div>
+      <span class="load-status" id="completion-load-status" style="font-size:12px;"></span>
+      <span style="color:var(--border);margin:0 4px;">|</span>
+      <button id="golden-toggle-btn-mirror" class="golden-btn" title="Toggle golden patch highlighting — load golden_patches.json from Dashboard first">✨ Golden Patch</button>
+    </div>
+    <div class="content" id="inspector-content">
+      <div style="padding:40px;text-align:center;color:var(--text-dim);">Select a trajectory to inspect.</div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Comparison ─────────────────────────── -->
+  <div id="tab-comparison" class="tab-pane hidden">
+    <div class="content">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <!-- Exp A -->
+        <div class="comp-exp-box">
+          <h4>Experiment A</h4>
+          <div class="file-pick" style="display:block;margin-bottom:8px;">
+            <input type="file" class="comp-dir-input" webkitdirectory>
+            <span class="lbl comp-dir-label">Select folder…</span>
+          </div>
+          <input type="text" class="comp-label" placeholder="Display name (optional)" style="width:100%;">
+        </div>
+        <!-- Exp B -->
+        <div class="comp-exp-box">
+          <h4>Experiment B</h4>
+          <div class="file-pick" style="display:block;margin-bottom:8px;">
+            <input type="file" class="comp-dir-input" webkitdirectory>
+            <span class="lbl comp-dir-label">Select folder…</span>
+          </div>
+          <input type="text" class="comp-label" placeholder="Display name (optional)" style="width:100%;">
+        </div>
+      </div>
+      <button class="load-btn" id="comp-load-btn">Compare Experiments</button>
+      <span class="load-status" id="comp-status"></span>
+      <div id="comp-results" style="margin-top:16px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// DATA PARSER
+// ============================================================
+const DataParser = {
+  parseJSONLText(text) {
+    return text.trim().split('\n').map((line, i) => {
+      try { return JSON.parse(line); } catch(e) { console.warn(`Line ${i}:`, e); return null; }
+    }).filter(Boolean);
+  },
+
+  async parseJSONL(file) {
+    return this.parseJSONLText(await file.text());
+  },
+
+  extractSteps(messages) {
+    const steps = [];
+    if (!messages || messages.length < 3) return steps;
+    for (let i = 2; i < messages.length; i += 2) {
+      const assistantMsg = messages[i];
+      if (!assistantMsg || assistantMsg.role !== 'assistant') continue;
+      const userObs = (i + 1 < messages.length) ? messages[i + 1] : null;
+      const content = assistantMsg.content || '';
+      const thought = this.extractThink(content);
+      const action = this.extractFunctionCall(content);
+      const observation = userObs?.content || '';
+      steps.push({
+        index: steps.length,
+        thought,
+        toolName: action.toolName,
+        parameters: action.parameters,
+        rawAction: action.raw,
+        observation,
+        hasError: this.detectError(observation),
+        isTruncated: observation.includes('<response clipped>') || observation.includes('truncated'),
+        contentLength: content.length + observation.length
+      });
+    }
+    return steps;
+  },
+
+  extractThink(content) {
+    const m = content.match(/<think>([\s\S]*?)<\/think>/);
+    return m ? m[1].trim() : '';
+  },
+
+  extractFunctionCall(content) {
+    const m = content.match(/<function=(\w+)>([\s\S]*?)<\/function>/);
+    if (!m) return { toolName: 'unknown', parameters: {}, raw: '' };
+    const params = {};
+    const re = /<parameter=(\w+)>([\s\S]*?)<\/parameter>/g;
+    let pm;
+    while ((pm = re.exec(m[2])) !== null) params[pm[1]] = pm[2];
+    return { toolName: m[1], parameters: params, raw: m[0] };
+  },
+
+  detectError(obs) {
+    if (!obs) return false;
+    const excerpt = obs.substring(0, 900);
+    const s = excerpt.toLowerCase();
+
+    // Successful file_editor output patterns — the file content may contain
+    // words like "ValueError", "DecompressionBombError", etc. which would
+    // cause false positives if we just search for "error" as a substring.
+    if (s.includes("here's the result of running `cat -n`")) return false;
+    if (s.includes('file created at')) return false;
+    if (s.includes('file has been edited')) return false;
+    if (s.includes('review the file and make sure')) return false;
+
+    // Explicit error signals that appear in actual error messages
+    if (/\berror:/i.test(excerpt)) return true;           // "ERROR:", "error: ..."
+    if (s.includes('traceback (most recent call last)')) return true;
+    if (s.includes('command not found')) return true;
+    if (s.includes('no such file or directory')) return true;
+    if (s.includes('permission denied')) return true;
+    if (s.includes('your proposed edit has introduced new syntax error')) return true;
+
+    return false;
+  },
+
+  getFilePaths(steps) {
+    const paths = new Set();
+    steps.forEach(s => {
+      if (s.parameters.path) paths.add(s.parameters.path);
+      if (s.parameters.file) paths.add(s.parameters.file);
+    });
+    return [...paths];
+  }
+};
+
+// ============================================================
+// MACRO ANALYZER
+// ============================================================
+const MacroAnalyzer = {
+  analyze(metadata, trajectories) {
+    const paired = metadata.map((meta, i) => {
+      const messages = trajectories[i] || [];
+      const steps = DataParser.extractSteps(messages);
+      return { ...meta, steps, messages, numSteps: steps.length, tokens: messages.reduce((a, m) => a + (m.content || '').length, 0) };
+    });
+    return {
+      paired,
+      summary: this.summary(paired),
+      terminationDist: this.termDist(paired),
+      successByRepo: this.successByRepo(paired),
+      toolDist: this.toolDist(paired),
+      toolSuccessRate: this.toolSuccessRate(paired),
+      stepsDist: this.stepsDist(paired),
+      successVsFailSteps: this.successVsFailSteps(paired),
+      actionNgrams: this.actionNgrams(paired),
+      fileEditorCommands: this.fileEditorCommands(paired),
+      errorOverSteps: this.errorOverSteps(paired),
+      repetitionAnalysis: this.repetitionAnalysis(paired),
+      firstAction: this.firstAction(paired),
+      errorRecovery: this.errorRecovery(paired),
+      filesTouched: this.filesTouched(paired)
+    };
+  },
+
+  summary(paired) {
+    const total = paired.length;
+    const successes = paired.filter(p => p.reward > 0).length;
+    const avgSteps = paired.reduce((a, p) => a + p.numSteps, 0) / total;
+    const avgTokens = paired.reduce((a, p) => a + p.tokens, 0) / total;
+    const stepsSorted = paired.map(p => p.numSteps).sort((a, b) => a - b);
+    const medianSteps = stepsSorted[Math.floor(stepsSorted.length / 2)];
+    const finishCount = paired.filter(p => p.steps.some(s => s.toolName === 'finish' || s.toolName === 'submit')).length;
+    return { total, successes, successRate: successes / total, avgSteps, avgTokens, medianSteps, finishCount, finishRate: finishCount / total };
+  },
+
+  termDist(paired) {
+    const d = {};
+    paired.forEach(p => { d[p.termination_reason] = (d[p.termination_reason] || 0) + 1; });
+    return d;
+  },
+
+  successByRepo(paired) {
+    const repos = {};
+    paired.forEach(p => {
+      if (!repos[p.repo]) repos[p.repo] = { total: 0, success: 0 };
+      repos[p.repo].total++;
+      if (p.reward > 0) repos[p.repo].success++;
+    });
+    return Object.entries(repos).map(([name, v]) => ({ name, ...v, rate: v.success / v.total })).sort((a, b) => b.total - a.total);
+  },
+
+  toolDist(paired) {
+    const d = {};
+    paired.forEach(p => p.steps.forEach(s => { d[s.toolName] = (d[s.toolName] || 0) + 1; }));
+    return d;
+  },
+
+  toolSuccessRate(paired) {
+    const t = {};
+    paired.forEach(p => p.steps.forEach(s => {
+      if (!t[s.toolName]) t[s.toolName] = { total: 0, errors: 0 };
+      t[s.toolName].total++;
+      if (s.hasError) t[s.toolName].errors++;
+    }));
+    return Object.entries(t).map(([name, v]) => ({ name, ...v, successRate: 1 - v.errors / v.total }));
+  },
+
+  stepsDist(paired) {
+    const d = {};
+    paired.forEach(p => { d[p.numSteps] = (d[p.numSteps] || 0) + 1; });
+    return d;
+  },
+
+  successVsFailSteps(paired) {
+    const s = [], f = [];
+    paired.forEach(p => (p.reward > 0 ? s : f).push(p.numSteps));
+    return { success: s, failure: f };
+  },
+
+  actionNgrams(paired) {
+    const bi = {}, tri = {};
+    paired.forEach(p => {
+      const tools = p.steps.map(s => s.toolName);
+      for (let i = 0; i < tools.length - 1; i++) {
+        const k = tools[i] + '→' + tools[i + 1];
+        bi[k] = (bi[k] || 0) + 1;
+      }
+      for (let i = 0; i < tools.length - 2; i++) {
+        const k = tools[i] + '→' + tools[i + 1] + '→' + tools[i + 2];
+        tri[k] = (tri[k] || 0) + 1;
+      }
+    });
+    return {
+      bigrams: Object.entries(bi).sort((a, b) => b[1] - a[1]).slice(0, 10),
+      trigrams: Object.entries(tri).sort((a, b) => b[1] - a[1]).slice(0, 10)
+    };
+  },
+
+  fileEditorCommands(paired) {
+    const d = {};
+    paired.forEach(p => p.steps.forEach(s => {
+      if (s.toolName === 'file_editor' || s.toolName === 'str_replace_editor') {
+        const cmd = s.parameters.command || 'unknown';
+        d[cmd] = (d[cmd] || 0) + 1;
+      }
+    }));
+    return d;
+  },
+
+  errorOverSteps(paired) {
+    const errs = {}, counts = {};
+    paired.forEach(p => p.steps.forEach(s => {
+      counts[s.index] = (counts[s.index] || 0) + 1;
+      if (s.hasError) errs[s.index] = (errs[s.index] || 0) + 1;
+    }));
+    const maxStep = Math.max(...Object.keys(counts).map(Number));
+    const result = [];
+    for (let i = 0; i <= Math.min(maxStep, 49); i++) {
+      result.push({ step: i, rate: (errs[i] || 0) / (counts[i] || 1) });
+    }
+    return result;
+  },
+
+  // Repetition = consecutive steps with identical rawAction (tool + all params)
+  repetitionAnalysis(paired) {
+    let trajsWithRepeats = 0;
+    const repeatCounts = [];
+    paired.forEach(p => {
+      let repeats = 0;
+      for (let i = 1; i < p.steps.length; i++) {
+        const prev = p.steps[i - 1], cur = p.steps[i];
+        if (cur.rawAction && cur.rawAction !== '' && cur.rawAction === prev.rawAction) repeats++;
+      }
+      if (repeats > 0) { trajsWithRepeats++; repeatCounts.push(repeats); }
+    });
+    return { trajsWithRepeats, pct: trajsWithRepeats / paired.length, avgRepeats: repeatCounts.length ? repeatCounts.reduce((a, b) => a + b) / repeatCounts.length : 0 };
+  },
+
+  firstAction(paired) {
+    const dist = {}, succ = {};
+    paired.forEach(p => {
+      if (!p.steps.length) return;
+      const tool = p.steps[0].toolName;
+      dist[tool] = (dist[tool] || 0) + 1;
+      if (!succ[tool]) succ[tool] = { total: 0, success: 0 };
+      succ[tool].total++;
+      if (p.reward > 0) succ[tool].success++;
+    });
+    return { distribution: dist, successCorrelation: succ };
+  },
+
+  errorRecovery(paired) {
+    let errorFollowed = 0, recovered = 0;
+    paired.forEach(p => {
+      for (let i = 0; i < p.steps.length - 1; i++) {
+        if (p.steps[i].hasError) {
+          errorFollowed++;
+          if (!p.steps[i + 1].hasError) recovered++;
+        }
+      }
+    });
+    return { errorFollowed, recovered, rate: errorFollowed ? recovered / errorFollowed : 0 };
+  },
+
+  filesTouched(paired) {
+    return paired.map(p => DataParser.getFilePaths(p.steps).length);
+  }
+};
+
+// ============================================================
+// MICRO ANALYZER
+// ============================================================
+const MicroAnalyzer = {
+  analyze(traj) {
+    const steps = traj.steps;
+    return {
+      repeats: this.findRepeats(steps),
+      loops: this.findLoops(steps),
+      errorSpirals: this.findErrorSpirals(steps),
+      toolBreakdown: this.toolBreakdown(steps),
+      files: DataParser.getFilePaths(steps),
+      tokenBurn: this.tokenBurn(steps),
+      errorTimeline: steps.map(s => s.hasError ? 1 : 0)
+    };
+  },
+
+  // Repetition = consecutive steps with IDENTICAL rawAction (tool + all parameters)
+  findRepeats(steps) {
+    const repeats = [];
+    let i = 0;
+    while (i < steps.length) {
+      let count = 1;
+      while (
+        i + count < steps.length &&
+        steps[i].rawAction !== '' &&
+        steps[i].rawAction === steps[i + count].rawAction
+      ) count++;
+      if (count > 1) repeats.push({ startIndex: i, count, toolName: steps[i].toolName });
+      i += count;
+    }
+    return repeats;
+  },
+
+  // Loop = same sequence of *identical* calls (full rawAction) repeating consecutively
+  findLoops(steps) {
+    const key = s => s.rawAction || `${s.toolName}|${JSON.stringify(s.parameters)}`;
+    const loops = [];
+    for (let windowSize = 2; windowSize <= 4; windowSize++) {
+      for (let i = 0; i <= steps.length - windowSize * 2; i++) {
+        const pattern = steps.slice(i, i + windowSize).map(key);
+        let reps = 1;
+        for (let j = i + windowSize; j <= steps.length - windowSize; j += windowSize) {
+          const next = steps.slice(j, j + windowSize).map(key);
+          if (next.every((k, idx) => k === pattern[idx])) reps++; else break;
+        }
+        if (reps >= 2) {
+          loops.push({ startIndex: i, windowSize, reps, pattern: steps.slice(i, i + windowSize).map(s => s.toolName + (s.parameters.command ? ':'+s.parameters.command : '')) });
+          break;
+        }
+      }
+    }
+    return loops;
+  },
+
+  findErrorSpirals(steps) {
+    const spirals = [];
+    let start = -1;
+    for (let i = 0; i < steps.length; i++) {
+      if (steps[i].hasError) { if (start === -1) start = i; }
+      else { if (start !== -1 && i - start >= 3) spirals.push({ start, length: i - start }); start = -1; }
+    }
+    if (start !== -1 && steps.length - start >= 3) spirals.push({ start, length: steps.length - start });
+    return spirals;
+  },
+
+  toolBreakdown(steps) {
+    const c = {};
+    steps.forEach(s => { c[s.toolName] = (c[s.toolName] || 0) + 1; });
+    return c;
+  },
+
+  tokenBurn(steps) {
+    let cum = 0;
+    return steps.map(s => { cum += s.contentLength; return cum; });
+  }
+};
+
+// ============================================================
+// CHART RENDERER (SVG)
+// ============================================================
+const CR = {
+  colors: ['#6c8cff','#4ecdc4','#4ade80','#fbbf24','#f87171','#a78bfa','#f472b6','#fb923c','#22d3ee','#818cf8'],
+
+  barChart(data, { width=400, height=220, horizontal=false, showValues=true }={}) {
+    if (!data.length) return '<div style="color:var(--text-dim);padding:20px;font-size:12px;">No data</div>';
+    const mg = { top:10, right:20, bottom: horizontal?10:55, left: horizontal?150:40 };
+    const w = width - mg.left - mg.right, h = height - mg.top - mg.bottom;
+    const maxVal = Math.max(...data.map(d => d.value), 1);
+    let svg = `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
+
+    if (horizontal) {
+      const barH = Math.min(20, h / data.length - 3);
+      data.forEach((d, i) => {
+        const y = mg.top + i * (h / data.length) + (h / data.length - barH) / 2;
+        const bw = (d.value / maxVal) * w;
+        const color = d.color || this.colors[i % this.colors.length];
+        svg += `<text x="${mg.left-6}" y="${y+barH/2+4}" text-anchor="end" class="chart-label" style="font-size:10px;">${this.trunc(d.label,22)}</text>`;
+        svg += `<rect x="${mg.left}" y="${y}" width="${bw}" height="${barH}" fill="${color}" rx="2" class="chart-bar"><title>${d.label}: ${d.value}</title></rect>`;
+        if (showValues) svg += `<text x="${mg.left+bw+4}" y="${y+barH/2+4}" class="chart-value" style="font-size:9px;">${this.fmtN(d.value)}</text>`;
+      });
+    } else {
+      const barW = Math.min(30, w / data.length - 4);
+      const gap = (w - barW * data.length) / (data.length + 1);
+      svg += `<line x1="${mg.left}" y1="${mg.top}" x2="${mg.left}" y2="${mg.top+h}" class="chart-axis"/>`;
+      svg += `<line x1="${mg.left}" y1="${mg.top+h}" x2="${mg.left+w}" y2="${mg.top+h}" class="chart-axis"/>`;
+      // Y-axis grid lines
+      for (let g = 1; g <= 4; g++) {
+        const gy = mg.top + h - (g / 4) * h;
+        svg += `<line x1="${mg.left}" y1="${gy}" x2="${mg.left+w}" y2="${gy}" class="chart-grid"/>`;
+        svg += `<text x="${mg.left-4}" y="${gy+4}" text-anchor="end" class="chart-label" style="font-size:9px;">${this.fmtN(Math.round(maxVal * g / 4))}</text>`;
+      }
+      // Pick a "nice" x-label interval so we get ~8-10 visible ticks
+      const niceStep = n => {
+        const raw = n / 9;
+        return [1,2,5,10,15,20,25,50,100].find(s => s >= raw) || Math.ceil(raw);
+      };
+      const lblStep = data.length > 12 ? niceStep(data.length) : 1;
+      const showBarVals = showValues && data.length <= 25;
+      data.forEach((d, i) => {
+        const x = mg.left + gap + i * (barW + gap);
+        const bh = (d.value / maxVal) * h;
+        const y = mg.top + h - bh;
+        const color = d.color || this.colors[i % this.colors.length];
+        svg += `<rect x="${x}" y="${y}" width="${barW}" height="${bh}" fill="${color}" rx="2" class="chart-bar"><title>${d.label}: ${d.value}</title></rect>`;
+        if (showBarVals) svg += `<text x="${x+barW/2}" y="${y-4}" text-anchor="middle" class="chart-value" style="font-size:9px;">${this.fmtN(d.value)}</text>`;
+        if (i % lblStep === 0) svg += `<text x="${x+barW/2}" y="${mg.top+h+14}" text-anchor="middle" class="chart-label" style="font-size:9px;">${this.trunc(d.label,10)}</text>`;
+      });
+    }
+    svg += '</svg>';
+    return svg;
+  },
+
+  donutChart(data, { width=280, height=220 }={}) {
+    if (!data.length) return '<div style="color:var(--text-dim);padding:20px;font-size:12px;">No data</div>';
+    const cx = (width*0.45), cy = height/2, r = Math.min(cx, cy)-12, ir = r*0.55;
+    const total = data.reduce((a, d) => a + d.value, 0);
+    let angle = -Math.PI/2;
+    let svg = `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
+    data.forEach((d, i) => {
+      const sa = (d.value/total)*Math.PI*2;
+      const x1=cx+r*Math.cos(angle), y1=cy+r*Math.sin(angle);
+      const x2=cx+r*Math.cos(angle+sa), y2=cy+r*Math.sin(angle+sa);
+      const ix1=cx+ir*Math.cos(angle), iy1=cy+ir*Math.sin(angle);
+      const ix2=cx+ir*Math.cos(angle+sa), iy2=cy+ir*Math.sin(angle+sa);
+      const lg = sa>Math.PI?1:0;
+      const color = d.color || this.colors[i%this.colors.length];
+      svg += `<path d="M${x1},${y1} A${r},${r} 0 ${lg},1 ${x2},${y2} L${ix2},${iy2} A${ir},${ir} 0 ${lg},0 ${ix1},${iy1} Z" fill="${color}" class="chart-bar"><title>${d.label}: ${d.value} (${(d.value/total*100).toFixed(1)}%)</title></path>`;
+      angle += sa;
+    });
+    const lx = cx+r+14;
+    data.forEach((d, i) => {
+      const y = 16+i*18, color = d.color||this.colors[i%this.colors.length];
+      svg += `<rect x="${lx}" y="${y}" width="9" height="9" fill="${color}" rx="2"/>`;
+      svg += `<text x="${lx+13}" y="${y+9}" class="chart-label" style="font-size:10px;">${d.label} (${d.value})</text>`;
+    });
+    svg += '</svg>';
+    return svg;
+  },
+
+  lineChart(data, { width=400, height=200, color='#6c8cff' }={}) {
+    if (!data.length) return '<div style="color:var(--text-dim);padding:20px;font-size:12px;">No data</div>';
+    const mg = {top:15,right:15,bottom:30,left:40};
+    const w = width-mg.left-mg.right, h = height-mg.top-mg.bottom;
+    const maxX = Math.max(...data.map(d=>d.x)), maxY = Math.max(...data.map(d=>d.y), 0.01);
+    let svg = `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
+    svg += `<line x1="${mg.left}" y1="${mg.top}" x2="${mg.left}" y2="${mg.top+h}" class="chart-axis"/>`;
+    svg += `<line x1="${mg.left}" y1="${mg.top+h}" x2="${mg.left+w}" y2="${mg.top+h}" class="chart-axis"/>`;
+    for (let i=0;i<=4;i++) {
+      const y = mg.top+h-(i/4)*h;
+      svg += `<line x1="${mg.left}" y1="${y}" x2="${mg.left+w}" y2="${y}" class="chart-grid"/>`;
+      svg += `<text x="${mg.left-5}" y="${y+4}" text-anchor="end" class="chart-label" style="font-size:9px;">${(maxY*i/4*100).toFixed(0)}%</text>`;
+    }
+    const pts = data.map(d=>`${mg.left+(d.x/maxX)*w},${mg.top+h-(d.y/maxY)*h}`).join(' ');
+    svg += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
+    const step = Math.ceil(data.length/10);
+    data.forEach((d,i) => { if(i%step===0) svg += `<text x="${mg.left+(d.x/maxX)*w}" y="${mg.top+h+14}" text-anchor="middle" class="chart-label" style="font-size:9px;">${d.x}</text>`; });
+    svg += '</svg>';
+    return svg;
+  },
+
+  histogram(vA, vB, { width=400, height=200, labelA='A', labelB='B', colorA='#4ade80', colorB='#f87171', bins=15 }={}) {
+    const all=[...vA,...vB];
+    if (!all.length) return '<div style="color:var(--text-dim);padding:20px;font-size:12px;">No data</div>';
+    const min=Math.min(...all), max=Math.max(...all), range=max-min||1, bw=range/bins;
+    const bA=new Array(bins).fill(0), bB=new Array(bins).fill(0);
+    vA.forEach(v=>{ bA[Math.min(Math.floor((v-min)/bw),bins-1)]++; });
+    vB.forEach(v=>{ bB[Math.min(Math.floor((v-min)/bw),bins-1)]++; });
+    const maxC=Math.max(...bA,...bB,1);
+    const mg={top:15,right:15,bottom:35,left:40};
+    const w=width-mg.left-mg.right, h=height-mg.top-mg.bottom, barW=w/bins;
+    let svg=`<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
+    svg+=`<line x1="${mg.left}" y1="${mg.top+h}" x2="${mg.left+w}" y2="${mg.top+h}" class="chart-axis"/>`;
+    for(let i=0;i<bins;i++){
+      const x=mg.left+i*barW;
+      const hA=(bA[i]/maxC)*h, hB=(bB[i]/maxC)*h;
+      svg+=`<rect x="${x+1}" y="${mg.top+h-hA}" width="${barW/2-1}" height="${hA}" fill="${colorA}" opacity="0.7" rx="1"><title>${labelA}: ${bA[i]}</title></rect>`;
+      svg+=`<rect x="${x+barW/2}" y="${mg.top+h-hB}" width="${barW/2-1}" height="${hB}" fill="${colorB}" opacity="0.7" rx="1"><title>${labelB}: ${bB[i]}</title></rect>`;
+      if(i%Math.ceil(bins/6)===0) svg+=`<text x="${x+barW/2}" y="${mg.top+h+14}" text-anchor="middle" class="chart-label" style="font-size:9px;">${Math.round(min+i*bw)}</text>`;
+    }
+    svg+=`<rect x="${mg.left+w-120}" y="${mg.top}" width="8" height="8" fill="${colorA}" opacity="0.7" rx="1"/>`;
+    svg+=`<text x="${mg.left+w-108}" y="${mg.top+8}" class="chart-label" style="font-size:10px;">${labelA}</text>`;
+    svg+=`<rect x="${mg.left+w-60}" y="${mg.top}" width="8" height="8" fill="${colorB}" opacity="0.7" rx="1"/>`;
+    svg+=`<text x="${mg.left+w-48}" y="${mg.top+8}" class="chart-label" style="font-size:10px;">${labelB}</text>`;
+    svg+='</svg>';
+    return svg;
+  },
+
+  sparkline(values, { width=200, height=28, color='#f87171' }={}) {
+    if (!values.length) return '';
+    const max=Math.max(...values,1);
+    const pts=values.map((v,i)=>`${(i/(values.length-1||1))*width},${height-(v/max)*(height-4)-2}`).join(' ');
+    return `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+  },
+
+  trunc(s, n) { return s.length > n ? s.substring(0,n-1)+'…' : s; },
+  fmtN(n) { return n>=1000?(n/1000).toFixed(1)+'k':String(n); }
+};
+
+// ============================================================
+// UI
+// ============================================================
+const UI = {
+  state: {
+    currentTab: 'dashboard',
+    paired: null,
+    analysis: null,
+    sortCol: null,
+    sortDir: 'asc',
+    currentTraj: null,       // { p, micro, repeatMap, loopSteps, index }
+    goldenPatches: null,     // {instance_id: {files, callables: [{file,name,qname,start,end}]}}
+    goldenPsLookup: null,    // {ps_fingerprint: instance_id} for JSONL matching
+    goldenHighlight: false,
+    selectedStepIndex: null,
+  },
+
+  TOOL_COLORS: {
+    file_editor: '#6c8cff', str_replace_editor: '#6c8cff',
+    execute_bash: '#4ade80', search: '#fbbf24',
+    finish: '#a78bfa', submit: '#a78bfa', unknown: '#8b90a5'
+  },
+
+  init() {
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => this.switchTab(tab.dataset.tab));
+    });
+
+    // Directory picker — auto-loads on selection
+    const dirInput = document.getElementById('dir-input');
+    dirInput.addEventListener('change', e => {
+      const files = e.target.files;
+      if (!files.length) return;
+      const name = files[0].webkitRelativePath.split('/')[0];
+      document.getElementById('dir-label').textContent = name;
+      this.loadFromDirectory(files, name);
+    });
+
+    document.getElementById('traj-selector').addEventListener('change', e => {
+      if (e.target.value !== '') this.showTrajectory(parseInt(e.target.value));
+    });
+    document.getElementById('traj-search').addEventListener('input', e => {
+      this.filterSelector(e.target.value);
+    });
+
+    document.getElementById('comp-load-btn').addEventListener('click', () => this.loadComparison());
+
+    // Update dir label text when comp dir picked
+    document.querySelectorAll('.comp-dir-input').forEach(input => {
+      input.addEventListener('change', e => {
+        const files = e.target.files;
+        if (!files.length) return;
+        const name = files[0].webkitRelativePath.split('/')[0];
+        e.target.closest('.file-pick').querySelector('.comp-dir-label').textContent = name;
+      });
+    });
+
+    // Completion-only JSONL import for Inspector
+    document.getElementById('completion-file-input').addEventListener('change', async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      document.getElementById('completion-file-label').textContent = file.name;
+      await this.loadCompletionFile(file);
+    });
+
+    // Golden patch highlighting
+    document.getElementById('golden-file-input').addEventListener('change', async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      document.getElementById('golden-file-label').textContent = file.name;
+      await this.loadGoldenPatches(file);
+    });
+
+    const toggleGolden = () => {
+      if (!this.state.goldenPatches) return;
+      this.state.goldenHighlight = !this.state.goldenHighlight;
+      this.syncGoldenBtns();
+      if (this.state.paired) {
+        this.populateSelector();
+        this.renderGoldenStats();
+      }
+      if (this.state.currentTraj) {
+        const savedStep = this.state.selectedStepIndex;
+        this.showTrajectory(this.state.currentTraj.index);
+        if (savedStep != null) this.showStepDetail(savedStep);
+      }
+    };
+    document.getElementById('golden-toggle-btn').addEventListener('click', toggleGolden);
+    document.getElementById('golden-toggle-btn-mirror').addEventListener('click', toggleGolden);
+  },
+
+  // ─── Completion-only import (no metadata) ────────────────
+
+  // Normalize issue text for PS-fingerprint matching.
+  // Must produce the same result as _normalize_ps() in export_golden_patches.py.
+  _normalizeIssueText(raw) {
+    return raw
+      .replace(/\*\*[A-Za-z ]+:\*\*\s*/g, '')   // strip **Title:** **Description:** etc.
+      .replace(/^\s*\[ISSUE\]\s*/g, '')           // strip leading [ISSUE] prefix
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 250);
+  },
+
+  // Extract repo hint from testbed paths in observations (e.g. /testbed/numpy/… → "numpy")
+  _repoFromMessages(messages) {
+    for (const m of messages) {
+      if (m.role !== 'user') continue;
+      const c = typeof m.content === 'string' ? m.content : '';
+      const match = c.match(/\/testbed\/([^\/\s]+)\//);
+      if (match) return match[1];
+    }
+    return null;
+  },
+
+  async loadCompletionFile(file) {
+    const status = document.getElementById('completion-load-status');
+    status.textContent = 'Parsing…';
+    try {
+      const text = await file.text();
+      const lines = text.trim().split('\n');
+      const paired = [];
+      for (let i = 0; i < lines.length; i++) {
+        let messages;
+        try { messages = JSON.parse(lines[i]); } catch(e) { continue; }
+        if (!Array.isArray(messages)) continue;
+        const steps = DataParser.extractSteps(messages);
+
+        const sysMsg = messages[0]?.content || '';
+        const userMsg = (messages.find(m => m.role === 'user') || {}).content || '';
+        let instance_id = null;
+
+        // Always extract and cache the normalized issue fingerprint so we can
+        // retry matching later when golden patches are loaded.
+        let psFingerprint = null;
+        const issueMatch = userMsg.match(/<github_issue>([\s\S]*?)<\/github_issue>/);
+        if (issueMatch) psFingerprint = this._normalizeIssueText(issueMatch[1]);
+
+        // 1. Explicit instance_id in system message
+        const idMatch = sysMsg.match(/instance[_\s]id[:\s]+([^\s\n,]+)/i);
+        if (idMatch) instance_id = idMatch[1];
+
+        // 2. PS-fingerprint lookup (only if golden patches already loaded)
+        if (!instance_id && psFingerprint && this.state.goldenPsLookup) {
+          instance_id = this.state.goldenPsLookup[psFingerprint] || null;
+        }
+
+        // Fallback: use repo hint + index for a more readable ID
+        const repoHint = this._repoFromMessages(messages);
+        if (!instance_id) instance_id = repoHint ? `${repoHint}/traj_${i}` : `traj_${i}`;
+
+        paired.push({
+          instance_id,
+          uid: `completion_${i}`,
+          repo: repoHint || '-',
+          reward: null,
+          termination_reason: '(unknown)',
+          steps,
+          messages,
+          numSteps: steps.length,
+          tokens: messages.reduce((a, m) => a + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length), 0),
+          _completionOnly: true,
+          _index: i,
+          _psFingerprint: psFingerprint,   // cached for deferred resolution
+        });
+      }
+      if (!paired.length) { status.textContent = 'Error: no valid message arrays found.'; return; }
+      this.state.paired = paired;
+      this.populateSelector();
+      const resolved = paired.filter(p => !p.instance_id.match(/^(traj_\d+|[^/]+\/traj_\d+)$/)).length;
+      status.textContent = `Loaded ${paired.length} trajectories from "${file.name}"` +
+        (resolved ? ` (${resolved} IDs resolved)` : '');
+      this.switchTab('inspector');
+    } catch(e) {
+      status.textContent = 'Error: ' + e.message;
+      console.error(e);
+    }
+  },
+
+  // After golden patches load, retry resolving any unmatched completion trajectories.
+  _resolveCompletionIds() {
+    if (!this.state.paired || !this.state.goldenPsLookup) return 0;
+    let count = 0;
+    this.state.paired.forEach(p => {
+      if (!p._completionOnly) return;
+      // Already resolved (not a traj_N placeholder)
+      if (p._psFingerprint === undefined) return;
+      if (!p.instance_id.match(/^(traj_\d+|[^/]+\/traj_\d+)$/)) return;
+      const resolved = p._psFingerprint && this.state.goldenPsLookup[p._psFingerprint];
+      if (resolved) {
+        p.instance_id = resolved;
+        count++;
+      }
+    });
+    return count;
+  },
+
+  // ─── Golden patch data loading ─────────────────────────────
+  syncGoldenBtns() {
+    const on = this.state.goldenHighlight;
+    const loaded = !!this.state.goldenPatches;
+    ['golden-toggle-btn', 'golden-toggle-btn-mirror'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      btn.classList.toggle('loaded', loaded);
+      btn.classList.toggle('active', on);
+    });
+  },
+
+  async loadGoldenPatches(file) {
+    const status = document.getElementById('golden-load-status');
+    status.textContent = 'Loading…';
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      // Extract the special fingerprint lookup key (if present)
+      const psLookup = data['__ps_lookup__'] || {};
+      delete data['__ps_lookup__'];
+      const count = Object.keys(data).length;
+      if (!count) { status.textContent = 'Error: empty JSON'; return; }
+      this.state.goldenPatches = data;
+      this.state.goldenPsLookup = psLookup;
+      this.syncGoldenBtns();
+
+      // Backfill: resolve any completion trajectories that were loaded before golden patches
+      const resolved = this._resolveCompletionIds();
+      const resolvedNote = resolved ? ` (+${resolved} IDs resolved)` : '';
+      status.textContent = `${count} instances${resolvedNote}`;
+
+      if (this.state.paired) { this.populateSelector(); this.renderGoldenStats(); }
+    } catch(e) {
+      status.textContent = 'Error: ' + e.message;
+      console.error(e);
+    }
+  },
+
+  // ─── Compute golden patch match for a step ─────────────────
+  getGoldenMatch(step, instanceId) {
+    if (!this.state.goldenPatches || !this.state.goldenHighlight) return null;
+    const golden = this.state.goldenPatches[instanceId];
+    if (!golden || !golden.callables || !golden.callables.length) return null;
+
+    const isEditor = step.toolName === 'file_editor' || step.toolName === 'str_replace_editor';
+    if (!isEditor) return null;
+
+    const cmd = step.parameters.command || '';
+    const isView = cmd === 'view' || cmd === '';
+    const isEdit = !isView && cmd !== 'reset';
+    if (!isView && !isEdit) return null;
+
+    const stepPath = (step.parameters.path || step.parameters.file || '').replace(/\\/g, '/');
+    if (!stepPath) return null;
+
+    // Normalize: strip /testbed/<repo>/ or /testbed/ prefix and leading slashes
+    const norm = p => p.replace(/^\/testbed\/[^\/]+\//, '').replace(/^\/testbed\//, '').replace(/^\/+/, '');
+    const normStep = norm(stepPath);
+
+    // Find golden callables whose file matches the edited file
+    const matching = golden.callables.filter(c => {
+      const ng = norm(c.file);
+      return normStep === ng || normStep.endsWith('/' + ng) || ng.endsWith('/' + normStep);
+    });
+    if (!matching.length) return null;
+
+    if (isView) {
+      // Check if view_range overlaps any callable's line range
+      let viewRange = null;
+      const vr = step.parameters.view_range;
+      if (vr) {
+        try {
+          const parsed = typeof vr === 'string' ? JSON.parse(vr) : vr;
+          if (Array.isArray(parsed) && parsed.length === 2) viewRange = parsed;
+        } catch(e) {}
+      }
+      let matchedCallable = null;
+      if (viewRange) {
+        const [vStart, vEnd] = viewRange;
+        matchedCallable = matching.find(c => vStart <= c.end && vEnd >= c.start);
+      }
+      return {
+        level: matchedCallable ? 'view-callable' : 'view-file',
+        callable: matchedCallable || null,
+        allCallables: matching,
+      };
+    } else {
+      // Edit: check for callable name in edit content
+      const editText = [
+        step.parameters.old_str || '',
+        step.parameters.new_str || '',
+        typeof step.parameters.content === 'string' ? step.parameters.content : '',
+      ].join('\n');
+
+      const matchedCallable = matching.find(c => {
+        const name = c.name || c.qname.split('.').pop();
+        if (!name) return false;
+        return new RegExp('\\bdef\\s+' + name + '\\b').test(editText)
+          || new RegExp('\\bclass\\s+' + name + '\\b').test(editText)
+          || new RegExp('\\b' + name + '\\b').test(editText);
+      });
+
+      return {
+        level: matchedCallable ? 'edit-callable' : 'edit-file',
+        callable: matchedCallable || null,
+        allCallables: matching,
+      };
+    }
+  },
+
+  // Returns true if the trajectory has at least one step that reached a golden callable
+  isTrajectoryLocated(p) {
+    if (!this.state.goldenPatches || !p.steps) return false;
+    return p.steps.some(step => {
+      const gm = this.getGoldenMatch(step, p.instance_id);
+      return gm && (gm.level === 'view-callable' || gm.level === 'edit-callable');
+    });
+  },
+
+  // Returns true if this golden patch entry has no callable-level data (file-only patch)
+  isNoCallablePatch(instanceId) {
+    const gd = this.state.goldenPatches?.[instanceId];
+    return gd && gd.callables.length === 0;
+  },
+
+  // Compute all 4 golden interaction flags for a trajectory.
+  // Returns {viewCallable, viewFile, editCallable, editFile} booleans.
+  getGoldenFlags(p) {
+    const flags = { viewCallable: false, viewFile: false, editCallable: false, editFile: false };
+    if (!this.state.goldenPatches || !p.steps) return flags;
+    p.steps.forEach(step => {
+      const gm = this.getGoldenMatch(step, p.instance_id);
+      if (!gm) return;
+      if (gm.level === 'view-callable') flags.viewCallable = true;
+      else if (gm.level === 'view-file') flags.viewFile = true;
+      else if (gm.level === 'edit-callable') flags.editCallable = true;
+      else if (gm.level === 'edit-file') flags.editFile = true;
+    });
+    return flags;
+  },
+
+  // Returns a compact emoji tag string summarising the golden status.
+  // 🎯 located callable  ✏️ modified callable  🔍 located file  📁 modified file  📄 no-callable patch
+  getGoldenTagStr(p) {
+    if (!this.state.goldenPatches || !this.state.goldenHighlight) return '';
+    const gd = this.state.goldenPatches[p.instance_id];
+    if (!gd) return '';
+    if (gd.callables.length === 0) return ' [📄]';
+    const f = this.getGoldenFlags(p);
+    let tags = '';
+    if (f.viewCallable) tags += '🎯';
+    if (f.editCallable) tags += '✏️';
+    if (f.viewFile && !f.viewCallable) tags += '🔍';
+    if (f.editFile && !f.editCallable) tags += '📁';
+    return tags ? ` [${tags}]` : '';
+  },
+
+  // ─── Localization stats panel (Dashboard) ──────────────────
+  renderGoldenStats() {
+    const panel = document.getElementById('golden-stats-panel');
+    if (!panel) return;
+    const { paired, goldenHighlight, goldenPatches } = this.state;
+    if (!goldenHighlight || !goldenPatches || !paired || !paired.length) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = '';
+
+    // Split trajectories that have a golden entry into:
+    //   noCallablePatch — golden patch modifies no callable (file-only changes)
+    //   withCallables   — golden patch has ≥1 callable (analysable)
+    const withGolden = paired.filter(p => goldenPatches[p.instance_id]);
+    const noCallablePatch = withGolden.filter(p => goldenPatches[p.instance_id].callables.length === 0);
+    const withCallables   = withGolden.filter(p => goldenPatches[p.instance_id].callables.length > 0);
+    const total = withCallables.length;
+
+    if (!withGolden.length) {
+      panel.innerHTML = '<div class="loc-stats"><p style="color:var(--text-dim);font-size:12px;">No trajectories match instances in golden_patches.json.</p></div>';
+      return;
+    }
+
+    // Located / not-located only counts trajectories with callable patches
+    const located    = withCallables.filter(p => this.isTrajectoryLocated(p));
+    const notLocated = withCallables.filter(p => !this.isTrajectoryLocated(p));
+
+    const locSucc = located.filter(p => p.reward > 0).length;
+    const locFail = located.length - locSucc;
+    const nlSucc  = notLocated.filter(p => p.reward > 0).length;
+    const nlFail  = notLocated.length - nlSucc;
+    const ncSucc  = noCallablePatch.filter(p => p.reward > 0).length;
+
+    const pct = (n, d) => d ? (n/d*100).toFixed(1)+'%' : '-';
+    const locW = total ? Math.round(located.length / total * 100) : 0;
+
+    // Breakdown by match type for "located" trajectories
+    const levelCounts = { 'view-callable': 0, 'edit-callable': 0, both: 0 };
+    located.forEach(p => {
+      const f = this.getGoldenFlags(p);
+      if (f.viewCallable && f.editCallable) levelCounts.both++;
+      else if (f.viewCallable) levelCounts['view-callable']++;
+      else if (f.editCallable) levelCounts['edit-callable']++;
+    });
+
+    let h = `<div class="loc-stats">`;
+    h += `<h3>📍 Fault Localization Analysis <span style="font-size:11px;font-weight:normal;color:var(--text-dim);">(requires ✨ Golden Patch on)</span></h3>`;
+
+    // Progress bar (over callable-patch trajectories only)
+    h += `<div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">Located rate — ${located.length}/${total} callable-patch trajectories</div>`;
+    h += `<div class="loc-bar">`;
+    h += `<div style="flex:${locW};background:var(--cyan);"></div>`;
+    h += `<div style="flex:${100-locW};background:var(--surface2);"></div>`;
+    h += `</div>`;
+
+    // Main table
+    h += `<table class="loc-table"><thead><tr>`;
+    h += `<th>Category</th><th class="num">Count</th><th class="pct">% of total</th><th class="pct">Success rate</th>`;
+    h += `</tr></thead><tbody>`;
+
+    // Located rows
+    h += `<tr><td>🎯 Located (found golden callable)</td><td class="num">${located.length}</td><td class="pct">${pct(located.length,total)}</td><td class="pct">${pct(locSucc,located.length)}</td></tr>`;
+    h += `<tr class="sub"><td>↳ Viewed + Edited golden callable</td><td class="num">${levelCounts.both}</td><td class="pct">${pct(levelCounts.both,total)}</td><td class="pct"></td></tr>`;
+    h += `<tr class="sub"><td>↳ Only viewed golden callable</td><td class="num">${levelCounts['view-callable']}</td><td class="pct">${pct(levelCounts['view-callable'],total)}</td><td class="pct"></td></tr>`;
+    h += `<tr class="sub"><td>↳ Only edited golden callable</td><td class="num">${levelCounts['edit-callable']}</td><td class="pct">${pct(levelCounts['edit-callable'],total)}</td><td class="pct"></td></tr>`;
+    h += `<tr class="sub"><td>↳ Located &amp; Success</td><td class="num" style="color:var(--green);">${locSucc}</td><td class="pct">${pct(locSucc,total)}</td><td class="pct"></td></tr>`;
+    h += `<tr class="sub"><td>↳ Located &amp; Failure</td><td class="num" style="color:var(--red);">${locFail}</td><td class="pct">${pct(locFail,total)}</td><td class="pct"></td></tr>`;
+
+    // Not located rows
+    h += `<tr><td>❌ Not Located</td><td class="num">${notLocated.length}</td><td class="pct">${pct(notLocated.length,total)}</td><td class="pct">${pct(nlSucc,notLocated.length)}</td></tr>`;
+    h += `<tr class="sub"><td>↳ Not Located &amp; Success <span style="color:var(--text-dim);font-size:10px;">(lucky fix?)</span></td><td class="num" style="color:var(--green);">${nlSucc}</td><td class="pct">${pct(nlSucc,total)}</td><td class="pct"></td></tr>`;
+    h += `<tr class="sub"><td>↳ Not Located &amp; Failure</td><td class="num" style="color:var(--red);">${nlFail}</td><td class="pct">${pct(nlFail,total)}</td><td class="pct"></td></tr>`;
+
+    h += `<tr class="total"><td>Callable-patch total</td><td class="num">${total}</td><td class="pct">100%</td><td class="pct">${pct(locSucc+nlSucc,total)}</td></tr>`;
+
+    // No-callable patch row (excluded from located/not-located analysis)
+    if (noCallablePatch.length) {
+      h += `<tr><td style="color:var(--text-dim);">📄 No-callable patch <span style="font-size:10px;">(file-only change, excluded from localization)</span></td>`;
+      h += `<td class="num" style="color:var(--text-dim);">${noCallablePatch.length}</td><td class="pct"></td>`;
+      h += `<td class="pct" style="color:var(--text-dim);">${pct(ncSucc,noCallablePatch.length)}</td></tr>`;
+    }
+
+    if (withGolden.length < paired.length) {
+      h += `<tr class="sub"><td style="color:var(--text-dim);">⚠ ${paired.length-withGolden.length} trajectories not in golden_patches.json (excluded)</td><td></td><td></td><td></td></tr>`;
+    }
+    h += `</tbody></table>`;
+    h += `<div style="margin-top:8px;font-size:11px;color:var(--text-dim);">🎯 Located = agent viewed/edited the exact golden callable. 📄 No-callable = patch only changes non-callable code.</div>`;
+    h += `</div>`;
+    panel.innerHTML = h;
+    // Also refresh table to update the Located column
+    this.renderTable();
+  },
+
+  // ─── Line-level diff (LCS-based) ───────────────────────────
+  diffLines(oldStr, newStr) {
+    const a = (oldStr || '').split('\n');
+    const b = (newStr || '').split('\n');
+    const m = a.length, n = b.length;
+    if (m * n > 250000) return null;  // too large, skip
+
+    // Build LCS table
+    const dp = Array.from({length: m + 1}, () => new Int32Array(n + 1));
+    for (let i = 1; i <= m; i++)
+      for (let j = 1; j <= n; j++)
+        dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
+
+    // Backtrack
+    const ops = [];
+    let i = m, j = n;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && a[i-1] === b[j-1]) {
+        ops.unshift({t: 'eq', l: a[i-1]}); i--; j--;
+      } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+        ops.unshift({t: 'ins', l: b[j-1]}); j--;
+      } else {
+        ops.unshift({t: 'del', l: a[i-1]}); i--;
+      }
+    }
+    return ops;
+  },
+
+  renderLineDiff(ops, ctx = 3) {
+    if (!ops) return null;  // signal to fall back
+    const changed = new Set();
+    ops.forEach((op, i) => { if (op.t !== 'eq') changed.add(i); });
+    if (!changed.size) return '<div style="padding:6px 10px;color:var(--text-dim);font-size:11px;">(no textual differences)</div>';
+
+    const visible = new Set();
+    changed.forEach(i => {
+      for (let j = Math.max(0, i - ctx); j <= Math.min(ops.length - 1, i + ctx); j++) visible.add(j);
+    });
+
+    let html = '<div class="diff-view">';
+    let gap = false;
+    ops.forEach((op, i) => {
+      if (!visible.has(i)) { gap = true; return; }
+      if (gap) { html += `<div class="diff-hunk-sep">@@ … @@</div>`; gap = false; }
+      const cls = op.t === 'del' ? 'diff-line-del' : op.t === 'ins' ? 'diff-line-ins' : 'diff-line-ctx';
+      const pfx = op.t === 'del' ? '−' : op.t === 'ins' ? '+' : ' ';
+      html += `<div class="diff-line ${cls}"><span class="diff-gutter">${pfx}</span><span class="diff-line-text">${this.esc(op.l)}</span></div>`;
+    });
+    html += '</div>';
+    return html;
+  },
+
+  switchTab(tab) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    ['dashboard','inspector','comparison'].forEach(t => {
+      document.getElementById('tab-' + t).classList.toggle('hidden', t !== tab);
+    });
+  },
+
+  async loadFromDirectory(fileList, name) {
+    const files = Array.from(fileList);
+    // Find *_n1.jsonl (metadata) — top-level file ending with _n1.jsonl
+    const metaFile = files.find(f => f.name.endsWith('_n1.jsonl'));
+    // Find chat_completions/eval.jsonl
+    const trajFile = files.find(f => f.webkitRelativePath.replace(/\\/g, '/').includes('chat_completions/eval.jsonl'));
+
+    const status = document.getElementById('load-status');
+    if (!metaFile) { status.textContent = 'Error: no *_n1.jsonl found in selected folder.'; return; }
+    if (!trajFile) { status.textContent = 'Error: no chat_completions/eval.jsonl found in selected folder.'; return; }
+
+    status.textContent = `Found: ${metaFile.name} + eval.jsonl — parsing…`;
+    try {
+      const metadata = await DataParser.parseJSONL(metaFile);
+      const trajectories = await DataParser.parseJSONL(trajFile);
+      await this.processData(metadata, trajectories, name, status);
+    } catch(e) {
+      status.textContent = 'Error: ' + e.message;
+      console.error(e);
+    }
+  },
+
+  async processData(metadata, trajectories, name, statusEl) {
+    document.getElementById('dashboard-loading').style.display = 'flex';
+    document.getElementById('dashboard-empty').style.display = 'none';
+    document.getElementById('dashboard-results').style.display = 'none';
+    await new Promise(r => setTimeout(r, 10));
+
+    this.state.analysis = MacroAnalyzer.analyze(metadata, trajectories);
+    this.state.paired = this.state.analysis.paired;
+
+    this.renderDashboard(name);
+    this.populateSelector();
+    statusEl.textContent = `Loaded: ${metadata.length} trajectories from "${name}"`;
+    document.getElementById('dashboard-loading').style.display = 'none';
+  },
+
+  // ─── Dashboard ──────────────────────────────────────────────
+  renderDashboard(name) {
+    const a = this.state.analysis, s = a.summary;
+    const container = document.getElementById('dashboard-results');
+    container.style.display = '';
+
+    let html = `<h2 style="font-size:15px;margin-bottom:14px;color:var(--text-dim);">Experiment: <span style="color:var(--text);">${name || ''}</span></h2>`;
+
+    // Summary cards
+    const SWE_BENCH_TOTAL = 500;
+    const missing = SWE_BENCH_TOTAL - s.total;
+    html += '<div class="cards">';
+    html += this.card('Total', s.total, missing > 0 ? `+ ${missing} missing from SWE-B 500` : 'SWE-Bench Verified');
+    html += this.card('Success (loaded)', (s.successRate*100).toFixed(1)+'%', `${s.successes} / ${s.total} loaded`);
+    html += this.card('Success (SWE-B)', (s.successes/SWE_BENCH_TOTAL*100).toFixed(1)+'%', `${s.successes} / ${SWE_BENCH_TOTAL} total`);
+    html += this.card('Avg Steps', s.avgSteps.toFixed(1));
+    html += this.card('Avg Tokens', Math.round(s.avgTokens/4).toLocaleString(), 'chars÷4 estimate');
+    html += this.card('Finish Rate', (s.finishRate*100).toFixed(1)+'%', `${s.finishCount} finish/submit`);
+    html += this.card('Error Recovery', (a.errorRecovery.rate*100).toFixed(1)+'%', `${a.errorRecovery.recovered}/${a.errorRecovery.errorFollowed}`);
+    html += this.card('Repetition Rate', (a.repetitionAnalysis.pct*100).toFixed(1)+'%', `${a.repetitionAnalysis.trajsWithRepeats} trajs`);
+    html += '</div>';
+
+    // Charts
+    html += '<div class="charts-grid">';
+
+    html += '<div class="chart-box"><h3>Termination Reasons</h3>';
+    html += CR.donutChart(Object.entries(a.terminationDist).map(([label,value])=>({label,value})),{width:400,height:200});
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>Success Rate by Repo (%)</h3>';
+    html += CR.barChart(a.successByRepo.map(r=>({label:r.name.split('/')[1]||r.name,value:+(r.rate*100).toFixed(1),color:'#4ecdc4'})),{width:400,height:Math.max(200,a.successByRepo.length*28),horizontal:true});
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>Tool Call Distribution</h3>';
+    html += CR.barChart(Object.entries(a.toolDist).sort((a,b)=>b[1]-a[1]).map(([label,value])=>({label,value})));
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>Tool Success Rate (%)</h3>';
+    html += CR.barChart(a.toolSuccessRate.sort((a,b)=>b.total-a.total).map(t=>({label:t.name,value:+(t.successRate*100).toFixed(1),color:t.successRate>0.8?'#4ade80':t.successRate>0.5?'#fbbf24':'#f87171'})));
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>Steps Distribution</h3>';
+    html += CR.barChart(Object.entries(a.stepsDist).sort((a,b)=>Number(a[0])-Number(b[0])).map(([label,value])=>({label,value,color:'#6c8cff'})));
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>Success vs Failure by Step Count</h3>';
+    html += CR.histogram(a.successVsFailSteps.success, a.successVsFailSteps.failure, {labelA:'Success',labelB:'Failure'});
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>Top Action Bigrams</h3>';
+    html += CR.barChart(a.actionNgrams.bigrams.map(([label,value])=>({label,value,color:'#a78bfa'})),{width:400,height:260,horizontal:true});
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>File Editor Sub-commands</h3>';
+    html += CR.donutChart(Object.entries(a.fileEditorCommands).map(([label,value])=>({label,value})),{width:380,height:200});
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>Error Rate Over Steps</h3>';
+    html += CR.lineChart(a.errorOverSteps.map(d=>({x:d.step,y:d.rate})),{color:'#f87171'});
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>First Action (& success rate per tool)</h3>';
+    html += CR.barChart(Object.entries(a.firstAction.distribution).sort((a,b)=>b[1]-a[1]).map(([label,value])=>({label,value,color:'#22d3ee'})));
+    html += '<div style="margin-top:6px;font-size:11px;color:var(--text-dim);">';
+    Object.entries(a.firstAction.successCorrelation).forEach(([tool,v])=>{
+      html += `${tool}: ${(v.success/v.total*100).toFixed(1)}% (n=${v.total})&nbsp;&nbsp;`;
+    });
+    html += '</div></div>';
+
+    html += '<div class="chart-box"><h3>Top Action Trigrams</h3>';
+    html += CR.barChart(a.actionNgrams.trigrams.map(([label,value])=>({label,value,color:'#f472b6'})),{width:400,height:260,horizontal:true});
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>Unique Files Touched Distribution</h3>';
+    const ftDist = {};
+    a.filesTouched.forEach(v => { ftDist[v]=(ftDist[v]||0)+1; });
+    html += CR.barChart(Object.entries(ftDist).sort((a,b)=>Number(a[0])-Number(b[0])).slice(0,20).map(([label,value])=>({label,value,color:'#fb923c'})));
+    html += '</div>';
+
+    html += '</div>';
+
+    // Golden patch localization stats (injected here, updated separately)
+    html += '<div id="golden-stats-panel" style="display:none"></div>';
+
+    // Table
+    html += '<h3 style="margin:16px 0 8px;">Trajectory Table</h3>';
+    html += '<div class="tbl-controls">';
+    html += '<input type="text" id="table-filter" placeholder="Filter by instance_id or repo…" style="width:260px;">';
+    html += '<select id="table-reward-filter"><option value="">All rewards</option><option value="1">Success</option><option value="0">Failure</option></select>';
+    html += '<select id="table-term-filter"><option value="">All terminations</option>';
+    Object.keys(a.terminationDist).forEach(t => { html += `<option value="${t}">${t}</option>`; });
+    html += '</select></div>';
+    html += '<div class="tbl-wrap"><table id="traj-table"><thead><tr>';
+    html += '<th data-col="_index">#</th><th data-col="instance_id">Instance ID</th><th data-col="repo">Repo</th><th data-col="reward">Reward</th><th data-col="termination_reason">Termination</th><th data-col="numSteps">Steps</th><th data-col="tools">Tools</th><th data-col="_located">Located</th>';
+    html += '</tr></thead><tbody id="traj-tbody"></tbody></table></div>';
+
+    container.innerHTML = html;
+    this.renderTable();
+    this.renderGoldenStats();
+    document.getElementById('table-filter').addEventListener('input', () => this.renderTable());
+    document.getElementById('table-reward-filter').addEventListener('change', () => this.renderTable());
+    document.getElementById('table-term-filter').addEventListener('change', () => this.renderTable());
+    document.querySelectorAll('#traj-table th').forEach(th => {
+      th.addEventListener('click', () => this.sortTable(th.dataset.col));
+    });
+  },
+
+  card(label, value, sub) {
+    return `<div class="card"><div class="clabel">${label}</div><div class="cvalue">${value}</div>${sub?`<div class="csub">${sub}</div>`:''}</div>`;
+  },
+
+  renderTable() {
+    const paired = this.state.paired;
+    if (!paired) return;
+    const filter = (document.getElementById('table-filter')?.value||'').toLowerCase();
+    const rFilter = document.getElementById('table-reward-filter')?.value||'';
+    const tFilter = document.getElementById('table-term-filter')?.value||'';
+    const goldenOn = this.state.goldenHighlight && this.state.goldenPatches;
+
+    let rows = paired.map((p,i)=>({...p, _index:i, _located: goldenOn ? this.isTrajectoryLocated(p) : null}));
+    if (filter) rows = rows.filter(p=>(p.instance_id||'').toLowerCase().includes(filter)||(p.repo||'').toLowerCase().includes(filter));
+    if (rFilter !== '') rows = rows.filter(p=>p.reward==parseFloat(rFilter));
+    if (tFilter) rows = rows.filter(p=>p.termination_reason===tFilter);
+
+    if (this.state.sortCol) {
+      rows.sort((a,b)=>{
+        let va=a[this.state.sortCol], vb=b[this.state.sortCol];
+        if (this.state.sortCol==='tools') {
+          va=[...new Set(a.steps.map(s=>s.toolName))].join(',');
+          vb=[...new Set(b.steps.map(s=>s.toolName))].join(',');
+        }
+        if (this.state.sortCol==='_located') { va=va?1:0; vb=vb?1:0; }
+        if (typeof va==='number') return this.state.sortDir==='asc'?va-vb:vb-va;
+        return this.state.sortDir==='asc'?String(va).localeCompare(String(vb)):String(vb).localeCompare(String(va));
+      });
+    }
+    document.querySelectorAll('#traj-table th').forEach(th => {
+      th.classList.remove('sorted-asc','sorted-desc');
+      if (th.dataset.col===this.state.sortCol) th.classList.add('sorted-'+this.state.sortDir);
+    });
+    const tbody = document.getElementById('traj-tbody');
+    tbody.innerHTML = rows.map(p => {
+      const tools=[...new Set(p.steps.map(s=>s.toolName))].filter(t=>t!=='unknown').join(', ');
+      let locatedCell;
+      if (!goldenOn) {
+        locatedCell = '<span style="color:var(--text-dim);font-size:11px;">—</span>';
+      } else if (this.isNoCallablePatch(p.instance_id)) {
+        locatedCell = '<span class="badge" style="background:rgba(251,191,36,.12);color:var(--yellow);font-size:10px;">📄 no-callable</span>';
+      } else if (!this.state.goldenPatches[p.instance_id]) {
+        locatedCell = '<span style="color:var(--text-dim);font-size:11px;">—</span>';
+      } else if (p._located) {
+        locatedCell = `<span class="badge" style="background:rgba(34,211,238,.2);color:var(--cyan);">${this.getGoldenTagStr(p).trim().slice(1,-1)||'🎯'} located</span>`;
+      } else {
+        locatedCell = '<span style="color:var(--text-dim);font-size:11px;">not located</span>';
+      }
+      return `<tr class="clickable" data-idx="${p._index}">
+        <td>${p._index}</td>
+        <td>${p.instance_id||''}</td>
+        <td>${p.repo||''}</td>
+        <td><span class="badge ${p.reward>0?'bg':'br'}">${p.reward}</span></td>
+        <td><span class="badge bb">${p.termination_reason}</span></td>
+        <td>${p.numSteps}</td>
+        <td style="font-size:11px;color:var(--text-dim);">${tools}</td>
+        <td>${locatedCell}</td>
+      </tr>`;
+    }).join('');
+    tbody.querySelectorAll('tr.clickable').forEach(tr=>{
+      tr.addEventListener('click',()=>{
+        this.switchTab('inspector');
+        document.getElementById('traj-selector').value = tr.dataset.idx;
+        this.showTrajectory(parseInt(tr.dataset.idx));
+      });
+    });
+  },
+
+  sortTable(col) {
+    this.state.sortDir = this.state.sortCol===col ? (this.state.sortDir==='asc'?'desc':'asc') : 'asc';
+    this.state.sortCol = col;
+    this.renderTable();
+  },
+
+  populateSelector() {
+    const sel = document.getElementById('traj-selector');
+    const goldenOn = this.state.goldenHighlight && this.state.goldenPatches;
+    sel.innerHTML = '<option value="">-- Select trajectory --</option>';
+    this.state.paired.forEach((p,i)=>{
+      const goldenTag = goldenOn ? this.getGoldenTagStr(p) : '';
+      const prefix = p._completionOnly ? `[${i}]` : `${p.reward>0?'✅':'❌'} [${i}]`;
+      const suffix = p._completionOnly ? `(${p.numSteps} steps)` : `(${p.termination_reason})`;
+      sel.innerHTML += `<option value="${i}">${prefix} ${p.instance_id||p.uid}${goldenTag} ${suffix}</option>`;
+    });
+  },
+
+  filterSelector(q) {
+    const ql = q.toLowerCase();
+    Array.from(document.getElementById('traj-selector').options).forEach(opt=>{
+      if (!opt.value) return;
+      opt.hidden = ql && !opt.text.toLowerCase().includes(ql);
+    });
+  },
+
+  // ─── Inspector ──────────────────────────────────────────────
+  showTrajectory(index) {
+    const p = this.state.paired[index];
+    if (!p) return;
+    const micro = MicroAnalyzer.analyze(p);
+
+    // Build lookup maps
+    const repeatMap = {};  // stepIndex → count (only for dupe steps, not the first occurrence)
+    micro.repeats.forEach(r => {
+      // mark all steps in repeat block starting from the second one
+      for (let i = r.startIndex + 1; i < r.startIndex + r.count; i++) repeatMap[i] = r.count;
+      // also mark the first one so it shows the badge
+      repeatMap[r.startIndex] = r.count;
+    });
+    const loopSteps = new Set();
+    micro.loops.forEach(l => {
+      for (let i = l.startIndex; i < l.startIndex + l.windowSize * l.reps; i++) loopSteps.add(i);
+    });
+
+    this.state.currentTraj = { p, micro, repeatMap, loopSteps, index };
+
+    const container = document.getElementById('inspector-content');
+    let html = '<div class="insp-wrap">';
+
+    // 1. Header
+    html += '<div class="insp-header">';
+    html += `<div class="fld"><div class="flbl">Instance ID</div><div class="fval">${p.instance_id||p.uid}</div></div>`;
+    if (!p._completionOnly) {
+      html += `<div class="fld"><div class="flbl">Repo</div><div class="fval">${p.repo||'-'}</div></div>`;
+      html += `<div class="fld"><div class="flbl">Reward</div><div class="fval"><span class="badge ${p.reward>0?'bg':'br'}" style="font-size:13px;">${p.reward}</span></div></div>`;
+      html += `<div class="fld"><div class="flbl">Termination</div><div class="fval"><span class="badge bb">${p.termination_reason}</span></div></div>`;
+    } else {
+      html += `<div class="fld"><div class="flbl">Source</div><div class="fval" style="color:var(--accent2);">completion-only</div></div>`;
+    }
+    html += `<div class="fld"><div class="flbl">Steps</div><div class="fval">${p.numSteps}</div></div>`;
+    html += `<div class="fld"><div class="flbl">Tokens (est)</div><div class="fval">${Math.round(p.tokens/4).toLocaleString()}</div></div>`;
+    // Show golden patch info when highlight is active
+    if (this.state.goldenHighlight && this.state.goldenPatches) {
+      const gd = this.state.goldenPatches[p.instance_id];
+      if (gd) {
+        const nc = gd.callables.length, nf = gd.files.length;
+        if (nc === 0) {
+          // No-callable patch: file-level change only
+          html += `<div class="fld"><div class="flbl">Golden Patch</div><div class="fval" style="color:var(--yellow);">📄 file-only (${nf} file${nf!==1?'s':''})</div></div>`;
+          html += `<div class="fld"><div class="flbl">Located</div><div class="fval" style="color:var(--text-dim);">📄 no-callable</div></div>`;
+        } else {
+          const tags = this.getGoldenTagStr(p);
+          const isLocated = this.isTrajectoryLocated(p);
+          html += `<div class="fld"><div class="flbl">Golden Patch</div><div class="fval" style="color:var(--orange);">✨ ${nc} callable${nc!==1?'s':''} in ${nf} file${nf!==1?'s':''}</div></div>`;
+          html += `<div class="fld"><div class="flbl">Located</div><div class="fval" style="color:${isLocated?'var(--cyan)':'var(--text-dim)'};">${tags||'—'}</div></div>`;
+        }
+      } else {
+        html += `<div class="fld"><div class="flbl">Golden Patch</div><div class="fval" style="color:var(--text-dim);">not in dataset</div></div>`;
+      }
+    }
+    html += '</div>';
+
+    // 2. Summary panels
+    html += '<div class="insp-summary">';
+
+    // Action sequence strip
+    html += '<div class="sum-panel"><h4>Action Sequence</h4><div class="action-strip" id="action-strip">';
+    p.steps.forEach((s,i)=>{
+      const color = this.TOOL_COLORS[s.toolName]||'#8b90a5';
+      const border = s.hasError?'2px solid var(--red)':'2px solid transparent';
+      const gm = this.getGoldenMatch(s, p.instance_id);
+      const gmCls = gm ? `gm-${gm.level}` : '';
+      const gmTitle = gm ? ` [${gm.level === 'view-callable' ? '🎯 view callable' : gm.level === 'edit-callable' ? '✏️ edit callable' : gm.level === 'view-file' ? '🔍 view file' : '📁 edit file'}]` : '';
+      html += `<div class="action-block ${gmCls}" style="background:${color};border:${border};" title="Step ${i+1}: ${s.toolName}${s.parameters.command?':'+s.parameters.command:''}${gmTitle}" data-step="${i}" onclick="UI.clickStepFromStrip(${i})"></div>`;
+    });
+    html += '</div></div>';
+
+    // Tool usage
+    html += '<div class="sum-panel"><h4>Tool Usage</h4>';
+    html += CR.barChart(Object.entries(micro.toolBreakdown).sort((a,b)=>b[1]-a[1]).map(([label,value])=>({label,value})),{width:220,height:130,horizontal:true});
+    html += '</div>';
+
+    // Files touched
+    html += '<div class="sum-panel"><h4>Files Touched</h4><ul class="files-list">';
+    if (micro.files.length) micro.files.slice(0,10).forEach(f=>{ html+=`<li title="${f}">${f.split('/').slice(-2).join('/')}</li>`; });
+    else html += '<li>(none)</li>';
+    if (micro.files.length>10) html += `<li style="color:var(--accent);">+${micro.files.length-10} more</li>`;
+    html += '</ul></div>';
+
+    // Error & token sparklines
+    html += '<div class="sum-panel"><h4>Error Timeline</h4>';
+    html += CR.sparkline(micro.errorTimeline,{width:160,height:28,color:'#f87171'});
+    html += `<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">${micro.errorTimeline.filter(e=>e).length} errors / ${p.numSteps} steps</div>`;
+    if (micro.tokenBurn.length) {
+      html += '<div style="margin-top:10px;font-size:11px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px;">Token Burn</div>';
+      html += CR.sparkline(micro.tokenBurn,{width:160,height:24,color:'#6c8cff'});
+      html += `<div style="font-size:11px;color:var(--text-dim);margin-top:2px;">~${Math.round(micro.tokenBurn[micro.tokenBurn.length-1]/4).toLocaleString()} total</div>`;
+    }
+    html += '</div>';
+
+    // Patterns
+    html += '<div class="sum-panel"><h4>Patterns</h4><div class="pattern-tags">';
+    if (!micro.repeats.length && !micro.loops.length && !micro.errorSpirals.length) {
+      html += '<span style="font-size:11px;color:var(--text-dim);">None detected</span>';
+    }
+    micro.repeats.forEach(r=>{
+      html += `<div class="badge by" style="cursor:pointer;margin:2px;" onclick="UI.clickStepFromStrip(${r.startIndex})">Repeat: ${r.toolName} ×${r.count} @${r.startIndex+1}</div>`;
+    });
+    micro.loops.forEach(l=>{
+      html += `<div class="badge by" style="cursor:pointer;margin:2px;" onclick="UI.clickStepFromStrip(${l.startIndex})">Loop: [${l.pattern.join('→')}] ×${l.reps} @${l.startIndex+1}</div>`;
+    });
+    micro.errorSpirals.forEach(s=>{
+      html += `<div class="badge br" style="cursor:pointer;margin:2px;" onclick="UI.clickStepFromStrip(${s.start})">Error spiral: ${s.length} steps @${s.start+1}</div>`;
+    });
+    html += '</div></div>';
+
+    html += '</div>'; // insp-summary
+
+    // 3. Body: step list + detail panel
+    html += '<div class="insp-body">';
+
+    // Left: step list
+    html += '<div class="step-list">';
+    p.steps.forEach((step,i)=>{
+      const status = step.hasError?'s-error':step.isTruncated?'s-warning':'s-success';
+      const toolKey = step.toolName+(step.parameters.command?':'+step.parameters.command:'');
+      const toolClass = `tc-${step.toolName in this.TOOL_COLORS?step.toolName:'unknown'}`;
+      const filePath = step.parameters.path||step.parameters.file||'';
+      const fileShort = filePath?filePath.split('/').slice(-1)[0]:'';
+
+      const gm = this.getGoldenMatch(step, p.instance_id);
+      const goldenClass = gm ? `gm-${gm.level}` : '';
+      const gmIcon = gm
+        ? (gm.level === 'view-callable' ? '🎯'
+          : gm.level === 'edit-callable' ? '✏️'
+          : gm.level === 'view-file'     ? '🔍'
+          :                                '📁')
+        : '';
+
+      let icons = '';
+      if (gmIcon) icons += gmIcon;
+      if (step.hasError) icons += '❌';
+      else if (step.isTruncated) icons += '⚠️';
+      else icons += '✅';
+      if (repeatMap[i]) icons += '🔁';
+      if (loopSteps.has(i)) icons += '🔄';
+      if (!step.thought) icons += '💭';
+
+      html += `<div class="step-row ${status} ${goldenClass}" data-step="${i}" onclick="UI.showStepDetail(${i})">`;
+      html += `<span class="step-num">${i+1}</span>`;
+      html += `<span class="step-tool-badge ${toolClass}">${this.CR_trunc(toolKey, 22)}</span>`;
+      if (fileShort) html += `<span class="step-file">${fileShort}</span>`;
+      html += `<span class="step-icons">${icons}</span>`;
+      html += '</div>';
+    });
+    html += '</div>';
+
+    // Right: step detail placeholder
+    html += '<div class="step-detail" id="step-detail-panel">';
+    html += '<div class="step-detail-empty">← Click a step to view details</div>';
+    html += '</div>';
+
+    html += '</div>'; // insp-body
+    html += '</div>'; // insp-wrap
+
+    container.innerHTML = html;
+  },
+
+  showStepDetail(stepIndex) {
+    const { p, micro, repeatMap, loopSteps } = this.state.currentTraj;
+    const step = p.steps[stepIndex];
+    if (!step) return;
+    this.state.selectedStepIndex = stepIndex;
+
+    // Highlight in list and strip
+    document.querySelectorAll('.step-row').forEach(r => r.classList.remove('selected'));
+    document.querySelector(`.step-row[data-step="${stepIndex}"]`)?.classList.add('selected');
+    document.querySelectorAll('.action-block').forEach(b => b.classList.remove('selected-step'));
+    document.querySelector(`.action-block[data-step="${stepIndex}"]`)?.classList.add('selected-step');
+
+    // Scroll step row into view
+    const row = document.querySelector(`.step-row[data-step="${stepIndex}"]`);
+    row?.scrollIntoView({ block:'nearest' });
+
+    const panel = document.getElementById('step-detail-panel');
+    const toolKey = step.toolName + (step.parameters.command ? ':'+step.parameters.command : '');
+    const toolClass = `tc-${step.toolName in this.TOOL_COLORS ? step.toolName : 'unknown'}`;
+    const status = step.hasError ? 'error' : step.isTruncated ? 'warning' : 'success';
+    const gm = this.getGoldenMatch(step, p.instance_id);
+
+    let html = '<div class="step-detail-content">';
+
+    // Detail header
+    html += '<div class="sd-header">';
+    html += `<strong>Step ${stepIndex+1}</strong>`;
+    html += `<span class="step-tool-badge ${toolClass}" style="font-size:12px;">${toolKey}</span>`;
+    if (step.parameters.path) html += `<span class="badge bb" style="font-size:11px;">${step.parameters.path.split('/').slice(-2).join('/')}</span>`;
+    if (step.hasError) html += '<span class="badge br">Error</span>';
+    if (step.isTruncated) html += '<span class="badge by">Truncated output</span>';
+    if (repeatMap[stepIndex]) html += `<span class="badge by">Repeat ×${repeatMap[stepIndex]}</span>`;
+    if (loopSteps.has(stepIndex)) html += '<span class="badge by">In loop</span>';
+    if (!step.thought) html += '<span class="badge br">Empty think</span>';
+    if (gm) {
+      const LABELS = {
+        'view-callable': ['🎯', 'Localization: viewed the golden callable', 'var(--cyan)', ''],
+        'edit-callable': ['✏️', 'Modification: edited the golden callable', 'var(--orange)', 'edit'],
+        'view-file':     ['🔍', 'Viewed a file modified by the golden patch', 'var(--accent)', ''],
+        'edit-file':     ['📁', 'Edited a file modified by the golden patch', 'var(--yellow)', ''],
+      };
+      const [icon, desc] = LABELS[gm.level] || ['?',''];
+      html += `<span class="badge" style="background:rgba(34,211,238,.15);color:${LABELS[gm.level][2]};font-size:11px;">${icon} ${desc}</span>`;
+    }
+    html += '</div>';
+
+    // Golden patch banner
+    if (gm) {
+      const LABELS = {
+        'view-callable': ['🎯', 'Localization: viewed the golden callable', 'var(--cyan)', ''],
+        'edit-callable': ['✏️', 'Modification: edited the golden callable', 'var(--orange)', 'edit'],
+        'view-file':     ['🔍', 'Viewed a file modified by the golden patch', 'var(--accent)', ''],
+        'edit-file':     ['📁', 'Edited a file modified by the golden patch', 'var(--yellow)', ''],
+      };
+      const [icon, desc, , extraClass] = LABELS[gm.level] || ['?','','',''];
+      const callableList = gm.allCallables.map(c =>
+        `<strong>${this.esc(c.qname)}</strong> <span style="color:var(--text-dim);">(lines ${c.start}–${c.end})</span>`
+      ).join(', ');
+      html += `<div class="sd-golden-banner ${extraClass}">`;
+      html += `${icon} <strong>${desc}</strong><br>`;
+      if (gm.callable) {
+        html += `Callable: <strong>${this.esc(gm.callable.qname)}</strong>`;
+        if (gm.level === 'view-callable') {
+          const vr = step.parameters.view_range;
+          html += vr ? ` &nbsp;·&nbsp; view_range: <code>${this.esc(vr)}</code>` : '';
+        }
+        html += `<br><code>${this.esc(gm.callable.file)}</code>`;
+        if (gm.allCallables.length > 1) {
+          html += `<div style="margin-top:4px;color:var(--text-dim);">All golden callables in this file: ${callableList}</div>`;
+        }
+      } else {
+        html += `File: <code>${this.esc(gm.allCallables[0]?.file || '')}</code>`;
+        html += `<div style="margin-top:4px;color:var(--text-dim);">Golden callables: ${callableList}</div>`;
+      }
+      html += `</div>`;
+    }
+
+    // Think — collapsed by default
+    html += '<div class="sd-section collapsed">';
+    html += '<div class="sd-section-title collapsed" onclick="UI.toggleSDSection(this)">Think</div>';
+    html += `<div class="sd-section-body think-body">${this.esc(step.thought||'(empty)')}</div>`;
+    html += '</div>';
+
+    // Action — expanded by default
+    html += '<div class="sd-section">';
+    html += '<div class="sd-section-title" onclick="UI.toggleSDSection(this)">Action</div>';
+    html += `<div class="sd-section-body">${this.highlightXml(step.rawAction||'(no action detected)')}</div>`;
+
+    // Inline diff for str_replace
+    if (step.parameters.command === 'str_replace' && step.parameters.old_str != null) {
+      const ops = this.diffLines(step.parameters.old_str || '', step.parameters.new_str || '');
+      const diffHtml = this.renderLineDiff(ops);
+      html += '<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">';
+      html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Diff preview:</div>';
+      if (diffHtml) {
+        html += diffHtml;
+      } else {
+        // Fallback for very large diffs
+        html += `<div class="diff-old" style="padding:6px;border-radius:4px;white-space:pre-wrap;font-size:11px;margin-bottom:4px;">${this.esc(step.parameters.old_str||'')}</div>`;
+        html += `<div class="diff-new" style="padding:6px;border-radius:4px;white-space:pre-wrap;font-size:11px;">${this.esc(step.parameters.new_str||'')}</div>`;
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // Observation — expanded by default
+    html += '<div class="sd-section">';
+    html += '<div class="sd-section-title" onclick="UI.toggleSDSection(this)">Observation</div>';
+    const obsDisplay = step.observation.length > 3000 ? step.observation.substring(0,3000)+'\n… (truncated for display)' : step.observation;
+    html += `<div class="sd-section-body">${this.esc(obsDisplay)}</div>`;
+    html += '</div>';
+
+    html += '</div>'; // step-detail-content
+    panel.innerHTML = html;
+  },
+
+  clickStepFromStrip(index) {
+    this.showStepDetail(index);
+    // scroll the step list row into view
+    document.querySelector(`.step-row[data-step="${index}"]`)?.scrollIntoView({ block:'nearest' });
+  },
+
+  toggleSDSection(titleEl) {
+    const section = titleEl.parentElement;
+    section.classList.toggle('collapsed');
+    titleEl.classList.toggle('collapsed');
+  },
+
+  esc(text) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+  },
+
+  CR_trunc(s, n) { return s.length > n ? s.substring(0, n-1)+'…' : s; },
+
+  highlightXml(text) {
+    return this.esc(text)
+      .replace(/&lt;function=(\w+)&gt;/g, '&lt;function=<strong style="color:var(--accent);">$1</strong>&gt;')
+      .replace(/&lt;parameter=(\w+)&gt;/g, '&lt;parameter=<strong style="color:var(--yellow);">$1</strong>&gt;')
+      .replace(/&lt;\/function&gt;/g, '&lt;<span style="color:var(--accent);">/function</span>&gt;')
+      .replace(/&lt;\/parameter&gt;/g, '&lt;<span style="color:var(--yellow);">/parameter</span>&gt;');
+  },
+
+  // ─── Comparison ─────────────────────────────────────────────
+
+  // Compute localization stats for a paired array (independent of goldenHighlight flag)
+  _computeLocStats(paired) {
+    if (!this.state.goldenPatches) return null;
+    const withGolden = paired.filter(p => this.state.goldenPatches[p.instance_id]);
+    const noCallable  = withGolden.filter(p => this.isNoCallablePatch(p.instance_id));
+    const withCallable = withGolden.filter(p => !this.isNoCallablePatch(p.instance_id));
+    // Temporarily force goldenHighlight on so getGoldenMatch works
+    const prev = this.state.goldenHighlight;
+    this.state.goldenHighlight = true;
+    const located    = withCallable.filter(p => this.isTrajectoryLocated(p));
+    const notLocated = withCallable.filter(p => !this.isTrajectoryLocated(p));
+    this.state.goldenHighlight = prev;
+    return {
+      total: withCallable.length,
+      located: located.length,
+      notLocated: notLocated.length,
+      locSucc:  located.filter(p => p.reward > 0).length,
+      locFail:  located.filter(p => p.reward <= 0).length,
+      nlSucc:   notLocated.filter(p => p.reward > 0).length,
+      nlFail:   notLocated.filter(p => p.reward <= 0).length,
+      noCallable: noCallable.length,
+      ncSucc:   noCallable.filter(p => p.reward > 0).length,
+      noGolden: paired.length - withGolden.length,
+    };
+  },
+
+  // SVG Venn diagram: A-only / both / B-only / neither
+  renderVenn(imap, nameA, nameB) {
+    let onlyA = 0, onlyB = 0, both = 0, neither = 0;
+    Object.values(imap).forEach(v => {
+      if (v.a === undefined || v.b === undefined) return; // only count shared instances
+      const sa = v.a > 0, sb = v.b > 0;
+      if (sa && sb)        both++;
+      else if (sa && !sb)  onlyA++;
+      else if (!sa && sb)  onlyB++;
+      else                 neither++;
+    });
+    const shared = onlyA + both + onlyB + neither;
+    const onlyInA = Object.values(imap).filter(v => v.a !== undefined && v.b === undefined).length;
+    const onlyInB = Object.values(imap).filter(v => v.b !== undefined && v.a === undefined).length;
+
+    const w = 340, h = 160;
+    const r = 66, cx1 = 126, cx2 = 214, cy = 80;
+    let svg = `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;display:block;">`;
+    // Circles
+    svg += `<circle cx="${cx1}" cy="${cy}" r="${r}" fill="#6c8cff" fill-opacity=".13" stroke="#6c8cff" stroke-width="1.5" stroke-opacity=".55"/>`;
+    svg += `<circle cx="${cx2}" cy="${cy}" r="${r}" fill="#f472b6" fill-opacity=".13" stroke="#f472b6" stroke-width="1.5" stroke-opacity=".55"/>`;
+    // Region labels
+    const style = `font-family:inherit;dominant-baseline:middle;`;
+    // A-only
+    svg += `<text x="${cx1-44}" y="${cy-10}" text-anchor="middle" fill="#6c8cff" font-size="26" font-weight="700" style="${style}">${onlyA}</text>`;
+    svg += `<text x="${cx1-44}" y="${cy+16}" text-anchor="middle" fill="#8b90a5" font-size="10" style="${style}">only ${nameA.length>10?nameA.slice(0,9)+'…':nameA}</text>`;
+    // Both
+    svg += `<text x="${(cx1+cx2)/2}" y="${cy-10}" text-anchor="middle" fill="#e1e4ed" font-size="26" font-weight="700" style="${style}">${both}</text>`;
+    svg += `<text x="${(cx1+cx2)/2}" y="${cy+16}" text-anchor="middle" fill="#8b90a5" font-size="10" style="${style}">both ✅</text>`;
+    // B-only
+    svg += `<text x="${cx2+44}" y="${cy-10}" text-anchor="middle" fill="#f472b6" font-size="26" font-weight="700" style="${style}">${onlyB}</text>`;
+    svg += `<text x="${cx2+44}" y="${cy+16}" text-anchor="middle" fill="#8b90a5" font-size="10" style="${style}">only ${nameB.length>10?nameB.slice(0,9)+'…':nameB}</text>`;
+    // Legend row below
+    svg += `<text x="${w/2}" y="${h-10}" text-anchor="middle" fill="#8b90a5" font-size="10" style="${style}">neither ✗: ${neither}  |  shared instances: ${shared}${onlyInA||onlyInB?`  |  exclusive to A: ${onlyInA}, B: ${onlyInB}`:''}</text>`;
+    svg += '</svg>';
+    return svg;
+  },
+  async loadComparison() {
+    const status = document.getElementById('comp-status');
+    const exps = [];
+
+    for (const box of document.querySelectorAll('.comp-exp-box')) {
+      const dirInput = box.querySelector('.comp-dir-input');
+      const labelInput = box.querySelector('.comp-label');
+      const files = Array.from(dirInput.files || []);
+      if (!files.length) continue;
+
+      const dirName = files[0].webkitRelativePath.split('/')[0];
+      const name = labelInput?.value.trim() || dirName;
+      const metaFile = files.find(f => f.name.endsWith('_n1.jsonl'));
+      const trajFile = files.find(f => f.webkitRelativePath.replace(/\\/g, '/').includes('chat_completions/eval.jsonl'));
+
+      if (!metaFile || !trajFile) {
+        status.textContent = `Error in "${name}": missing _n1.jsonl or chat_completions/eval.jsonl`;
+        return;
+      }
+      status.textContent = `Parsing ${name}…`;
+      try {
+        const metadata = await DataParser.parseJSONL(metaFile);
+        const trajectories = await DataParser.parseJSONL(trajFile);
+        const analysis = MacroAnalyzer.analyze(metadata, trajectories);
+        exps.push({ name, analysis, paired: analysis.paired });
+      } catch(e) {
+        status.textContent = `Error loading ${name}: ${e.message}`;
+        return;
+      }
+    }
+
+    if (exps.length < 2) { status.textContent = 'Select folders for at least 2 experiments.'; return; }
+    this.renderComparison(exps);
+    status.textContent = 'Comparison ready.';
+  },
+
+  renderComparison(exps) {
+    const container = document.getElementById('comp-results');
+    const [a, b] = exps;
+    const sa = a.analysis.summary, sb = b.analysis.summary;
+    let html = '';
+
+    // Build imap up-front — needed by Venn and per-instance table
+    const imap = {};
+    a.paired.forEach(p => { imap[p.instance_id] = { a: p.reward, repo: p.repo }; });
+    b.paired.forEach(p => {
+      if (!imap[p.instance_id]) imap[p.instance_id] = { repo: p.repo };
+      imap[p.instance_id].b = p.reward;
+      imap[p.instance_id].repo = imap[p.instance_id].repo || p.repo;
+    });
+
+    // Metrics table
+    html += '<h3 style="margin:0 0 8px;">Side-by-side Metrics</h3>';
+    html += `<div class="tbl-wrap"><table class="comp-table"><thead><tr><th>Metric</th><th>${a.name}</th><th>${b.name}</th><th>Δ</th></tr></thead><tbody>`;
+    const rows = [
+      ['Success Rate', (sa.successRate*100).toFixed(1)+'%', (sb.successRate*100).toFixed(1)+'%', ((sb.successRate-sa.successRate)*100).toFixed(1)],
+      ['Total', sa.total, sb.total, sb.total-sa.total],
+      ['Successes', sa.successes, sb.successes, sb.successes-sa.successes],
+      ['Avg Steps', sa.avgSteps.toFixed(1), sb.avgSteps.toFixed(1), (sb.avgSteps-sa.avgSteps).toFixed(1)],
+      ['Median Steps', sa.medianSteps, sb.medianSteps, sb.medianSteps-sa.medianSteps],
+      ['Finish Rate', (sa.finishRate*100).toFixed(1)+'%', (sb.finishRate*100).toFixed(1)+'%', ((sb.finishRate-sa.finishRate)*100).toFixed(1)],
+      ['Error Recovery', (a.analysis.errorRecovery.rate*100).toFixed(1)+'%', (b.analysis.errorRecovery.rate*100).toFixed(1)+'%', ((b.analysis.errorRecovery.rate-a.analysis.errorRecovery.rate)*100).toFixed(1)],
+      ['Repetition Rate', (a.analysis.repetitionAnalysis.pct*100).toFixed(1)+'%', (b.analysis.repetitionAnalysis.pct*100).toFixed(1)+'%', ((b.analysis.repetitionAnalysis.pct-a.analysis.repetitionAnalysis.pct)*100).toFixed(1)],
+    ];
+    const allTerms = new Set([...Object.keys(a.analysis.terminationDist), ...Object.keys(b.analysis.terminationDist)]);
+    allTerms.forEach(t => {
+      const pa=(a.analysis.terminationDist[t]||0)/sa.total*100, pb=(b.analysis.terminationDist[t]||0)/sb.total*100;
+      rows.push([t+' %', pa.toFixed(1)+'%', pb.toFixed(1)+'%', (pb-pa).toFixed(1)]);
+    });
+    rows.forEach(([label,va,vb,delta])=>{
+      const d=parseFloat(delta), cls=d>0?'dpos':d<0?'dneg':'';
+      html+=`<tr><td>${label}</td><td>${va}</td><td>${vb}</td><td class="${cls}">${d>0?'+':''}${delta}</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+
+    // ── Venn diagram ───────────────────────────────────────────
+    html += '<h3 style="margin:16px 0 8px;">Success Overlap</h3>';
+    html += `<div class="chart-box" style="padding:20px 10px;">${this.renderVenn(imap, a.name, b.name)}</div>`;
+
+    // ── Localization comparison (only when golden patches loaded) ─
+    const locA = this._computeLocStats(a.paired);
+    const locB = this._computeLocStats(b.paired);
+    if (locA && locB && (locA.total || locB.total)) {
+      const pct = (n, d) => d ? (n/d*100).toFixed(1)+'%' : '-';
+      html += '<h3 style="margin:16px 0 8px;">📍 Fault Localization Comparison</h3>';
+      html += `<div class="tbl-wrap"><table class="comp-table"><thead><tr><th>Metric</th><th>${a.name}</th><th>${b.name}</th><th>Δ</th></tr></thead><tbody>`;
+      const locRows = [
+        ['Located callable (🎯)',            locA.located,    locB.located,    locB.located-locA.located],
+        ['↳ Located & Success',              locA.locSucc,    locB.locSucc,    locB.locSucc-locA.locSucc],
+        ['↳ Located & Failure',              locA.locFail,    locB.locFail,    locB.locFail-locA.locFail],
+        ['Not located (❌)',                  locA.notLocated, locB.notLocated, locB.notLocated-locA.notLocated],
+        ['↳ Not-located & Success (lucky)',  locA.nlSucc,     locB.nlSucc,     locB.nlSucc-locA.nlSucc],
+        ['Location rate %', pct(locA.located,locA.total), pct(locB.located,locB.total),
+         (locA.total&&locB.total ? ((locB.located/locB.total-locA.located/locA.total)*100).toFixed(1) : '')],
+        ['Located success rate %', pct(locA.locSucc,locA.located), pct(locB.locSucc,locB.located), ''],
+        ['No-callable patch (📄)',            locA.noCallable, locB.noCallable, locB.noCallable-locA.noCallable],
+        ['Not in golden dataset',            locA.noGolden,   locB.noGolden,   locB.noGolden-locA.noGolden],
+        ['Callable-patch total',             locA.total,      locB.total,      locB.total-locA.total],
+      ];
+      locRows.forEach(([label, va, vb, delta]) => {
+        const d = parseFloat(delta);
+        const cls = !isNaN(d) ? (d > 0 ? 'dpos' : d < 0 ? 'dneg' : '') : '';
+        const dStr = typeof delta === 'number' ? (d > 0 ? `+${d}` : String(d)) : (delta || '');
+        html += `<tr><td>${label}</td><td>${va}</td><td>${vb}</td><td class="${cls}">${dStr}</td></tr>`;
+      });
+      html += '</tbody></table></div>';
+    } else if (this.state.goldenPatches) {
+      html += '<p style="font-size:12px;color:var(--text-dim);margin:12px 0;">No instances matched golden_patches.json in these experiments.</p>';
+    } else {
+      html += '<p style="font-size:12px;color:var(--text-dim);margin:12px 0;">💡 Load golden_patches.json on the Dashboard tab to see localization comparison.</p>';
+    }
+
+    // Charts
+    html += '<div class="charts-grid" style="margin-top:16px;">';
+
+    html += '<div class="chart-box"><h3>Termination Reasons (%)</h3>';
+    html += this.compBarChart([...allTerms].map(t=>({label:t,valueA:(a.analysis.terminationDist[t]||0)/sa.total*100,valueB:(b.analysis.terminationDist[t]||0)/sb.total*100})),a.name,b.name);
+    html += '</div>';
+
+    const allTools = new Set([...Object.keys(a.analysis.toolDist), ...Object.keys(b.analysis.toolDist)]);
+    html += '<div class="chart-box"><h3>Tool Usage Comparison</h3>';
+    html += this.compBarChart([...allTools].map(t=>({label:t,valueA:a.analysis.toolDist[t]||0,valueB:b.analysis.toolDist[t]||0})).sort((x,y)=>(y.valueA+y.valueB)-(x.valueA+x.valueB)),a.name,b.name);
+    html += '</div>';
+
+    const allRepos = new Set([...a.analysis.successByRepo.map(r=>r.name), ...b.analysis.successByRepo.map(r=>r.name)]);
+    html += '<div class="chart-box"><h3>Success Rate by Repo (%)</h3>';
+    html += this.compBarChart([...allRepos].map(repo=>{
+      const ra=a.analysis.successByRepo.find(r=>r.name===repo), rb=b.analysis.successByRepo.find(r=>r.name===repo);
+      return {label:repo.split('/')[1]||repo, valueA:ra?ra.rate*100:0, valueB:rb?rb.rate*100:0};
+    }),a.name,b.name);
+    html += '</div>';
+
+    html += '<div class="chart-box"><h3>Step Count Distribution</h3>';
+    html += CR.histogram(a.paired.map(p=>p.numSteps),b.paired.map(p=>p.numSteps),{labelA:a.name,labelB:b.name,colorA:'#6c8cff',colorB:'#f472b6'});
+    html += '</div>';
+
+    html += '</div>';
+
+    // Per-instance table
+    html += '<h3 style="margin:16px 0 8px;">Per-Instance Comparison</h3>';
+    html += '<div class="tbl-controls"><label><input type="checkbox" id="comp-disagree"> Show only disagreements</label></div>';
+    html += `<div class="tbl-wrap" style="max-height:500px;"><table><thead><tr><th>Instance ID</th><th>Repo</th><th>${a.name}</th><th>${b.name}</th><th>Δ</th></tr></thead><tbody id="comp-tbody">`;
+
+    Object.entries(imap).sort((x,y)=>{
+      const da=(x[1].a??-1)-(x[1].b??-1), db=(y[1].a??-1)-(y[1].b??-1);
+      return Math.abs(db)-Math.abs(da);
+    }).forEach(([id,v])=>{
+      const ra=v.a!==undefined?v.a:'-', rb=v.b!==undefined?v.b:'-';
+      const dis=ra!=='-'&&rb!=='-'&&ra!==rb;
+      const bA=ra==='-'?'':(`<span class="badge ${ra>0?'bg':'br'}">${ra}</span>`);
+      const bB=rb==='-'?'':(`<span class="badge ${rb>0?'bg':'br'}">${rb}</span>`);
+      html+=`<tr class="ci-row" data-dis="${dis}"><td>${id}</td><td>${v.repo||''}</td><td>${bA}</td><td>${bB}</td><td>${dis?(rb>ra?'<span class="dpos">⬆</span>':'<span class="dneg">⬇</span>'):'-'}</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+
+    container.innerHTML = html;
+    document.getElementById('comp-disagree')?.addEventListener('change',e=>{
+      document.querySelectorAll('.ci-row').forEach(r=>{
+        r.style.display = e.target.checked && r.dataset.dis!=='true' ? 'none' : '';
+      });
+    });
+  },
+
+  compBarChart(data, nameA, nameB, { width=400, height=220 }={}) {
+    if (!data.length) return '';
+    const mg={top:20,right:15,bottom:60,left:40};
+    const w=width-mg.left-mg.right, h=height-mg.top-mg.bottom;
+    const maxVal=Math.max(...data.flatMap(d=>[d.valueA,d.valueB]),1);
+    const gW=w/data.length, bW=gW*0.35;
+    let svg=`<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
+    svg+=`<line x1="${mg.left}" y1="${mg.top+h}" x2="${mg.left+w}" y2="${mg.top+h}" class="chart-axis"/>`;
+    data.forEach((d,i)=>{
+      const x=mg.left+i*gW+gW*0.1;
+      const hA=(d.valueA/maxVal)*h, hB=(d.valueB/maxVal)*h;
+      svg+=`<rect x="${x}" y="${mg.top+h-hA}" width="${bW}" height="${hA}" fill="#6c8cff" opacity="0.8" rx="2"><title>${nameA}: ${typeof d.valueA==='number'?d.valueA.toFixed(1):d.valueA}</title></rect>`;
+      svg+=`<rect x="${x+bW+2}" y="${mg.top+h-hB}" width="${bW}" height="${hB}" fill="#f472b6" opacity="0.8" rx="2"><title>${nameB}: ${typeof d.valueB==='number'?d.valueB.toFixed(1):d.valueB}</title></rect>`;
+      svg+=`<text x="${x+bW}" y="${mg.top+h+14}" text-anchor="middle" class="chart-label" transform="rotate(30 ${x+bW} ${mg.top+h+14})" style="font-size:9px;">${CR.trunc(d.label,12)}</text>`;
+    });
+    svg+=`<rect x="${mg.left}" y="2" width="8" height="8" fill="#6c8cff" opacity="0.8" rx="1"/>`;
+    svg+=`<text x="${mg.left+12}" y="10" class="chart-label" style="font-size:10px;">${nameA}</text>`;
+    svg+=`<rect x="${mg.left+100}" y="2" width="8" height="8" fill="#f472b6" opacity="0.8" rx="1"/>`;
+    svg+=`<text x="${mg.left+112}" y="10" class="chart-label" style="font-size:10px;">${nameB}</text>`;
+    svg+='</svg>';
+    return svg;
+  }
+};
+
+document.addEventListener('DOMContentLoaded', () => UI.init());
+</script>
+</body>
+</html>

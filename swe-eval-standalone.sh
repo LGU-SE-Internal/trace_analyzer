@@ -3,83 +3,98 @@
 # Run swe-setup.sh first.
 #
 # Lightweight evaluation using AgentExecutionEngine + OpenAI-compatible API.
-# No Ray, no verl, no FSDP — just a vLLM server and ARL sandbox.
+# No Ray, no verl, no FSDP — just a vLLM/SGLang server and ARL sandbox.
 #
 # Usage:
-#   source swe-eval-standalone.sh <model_name> [n_samples] [root_dir]
+#   bash swe-eval-standalone.sh <model_name> [n_samples] [root_dir]
+#
+# ── Backend ──────────────────────────────────────────────────────────────────
+#   BACKEND=vllm   (default) — local model served by vLLM.
+#   BACKEND=sglang            — local model served by SGLang.
 #
 # Examples:
 #   # Greedy eval (n=1)
-#   source swe-eval-standalone.sh Qwen3-8B
+#   bash swe-eval-standalone.sh Qwen3-8B
 #
 #   # pass@5 with sampling
-#   source swe-eval-standalone.sh Qwen3-8B 5
+#   bash swe-eval-standalone.sh Qwen3-8B 5
+#
+#   # SGLang backend
+#   BACKEND=sglang bash swe-eval-standalone.sh Qwen3-8B
 #
 #   # Dry run: harness on unmodified code (no model needed)
-#   DRY_RUN=true source swe-eval-standalone.sh dummy
+#   DRY_RUN=true bash swe-eval-standalone.sh dummy
 #
 #   # Eval with standardized pytest output
-#   NORMALIZE_PYTEST=true source swe-eval-standalone.sh Qwen3-8B
+#   NORMALIZE_PYTEST=true bash swe-eval-standalone.sh Qwen3-8B
 #
-# vLLM lifecycle:
-#   The script auto-starts vLLM if no server is already serving the
+# Server lifecycle:
+#   The script auto-starts vLLM/SGLang if no server is already serving the
 #   requested model, and leaves it running after eval finishes so it
-#   can be reused across runs.  To manually stop it:
-#     kill $(pgrep -f "vllm serve")
-#   Or to stop ALL vLLM processes:
-#     pkill -f "vllm serve"
+#   can be reused across runs.
 
 
 # ============ Arguments ============
-MODEL_NAME=${1:?'Usage: source swe-eval-standalone.sh <model_name> [n_samples] [root_dir]'}
+MODEL_NAME=${1:?'Usage: bash swe-eval-standalone.sh <model_name> [n_samples] [root_dir]'}
 N_SAMPLES=${2:-1}
 ROOT_DIR=${3:-'/mnt/bn/trae-research-models/xujunjielong'}
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-eval}"
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
 
-source scripts/clear_arl.sh
+bash scripts/clear_arl.sh
 
 # ============ Feature Flags ============
 DRY_RUN="${DRY_RUN:-false}"
 NORMALIZE_PYTEST="${NORMALIZE_PYTEST:-false}"
 MAX_TASKS="${MAX_TASKS:-}"
+BACKEND="${BACKEND:-sglang}"
+
+if [ "$BACKEND" != "vllm" ] && [ "$BACKEND" != "sglang" ]; then
+    echo "ERROR: BACKEND must be 'vllm' or 'sglang' (got: $BACKEND)" >&2
+    return 1 2>/dev/null || exit 1
+fi
 
 # ============ Environment ============
 export TOKENIZERS_PARALLELISM=true
 
-# ============ vLLM Server ============
-VLLM_PORT="${VLLM_PORT:-8000}"
-VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:${VLLM_PORT}/v1}"
-VLLM_TP="${VLLM_TP:-8}"
+# ============ Server Config ============
+SERVER_PORT="${VLLM_PORT:-8000}"
+SERVER_BASE_URL="${VLLM_BASE_URL:-http://localhost:${SERVER_PORT}/v1}"
+SERVER_TP="${VLLM_TP:-8}"
 MODEL_PATH="$ROOT_DIR/models/$MODEL_NAME"
 
 # Match veRL's formula: max_model_len = prompt_length + response_length
 # (see verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py:195)
-VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-163840}"  # 131072 + 32768
+SERVER_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-163840}"  # 131072 + 32768
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 
-# Check if vLLM is already serving the requested model.
-# Returns 0 if the model is being served, 1 otherwise.
-check_vllm_serving_model() {
+# Check if a server is already serving the requested model.
+check_serving_model() {
     local response
-    response=$(curl -sf "http://localhost:${VLLM_PORT}/v1/models" 2>/dev/null) || return 1
+    response=$(curl -sf "http://localhost:${SERVER_PORT}/v1/models" 2>/dev/null) || return 1
     echo "$response" | grep -q "$MODEL_PATH" && return 0
-    # Also check by model name (vLLM may report just the name, not the full path)
     echo "$response" | grep -q "$MODEL_NAME" && return 0
     return 1
 }
 
-# Kill any existing vLLM processes on the target port.
-kill_existing_vllm() {
+# Kill any existing server processes on the target port.
+kill_existing_server() {
     local pids
-    pids=$(pgrep -f "vllm serve.*--port $VLLM_PORT" 2>/dev/null || pgrep -f "vllm.entrypoints.*--port $VLLM_PORT" 2>/dev/null)
+    if [ "$BACKEND" = "sglang" ]; then
+        pids=$(pgrep -f "sglang.*--port $SERVER_PORT" 2>/dev/null)
+    else
+        pids=$(pgrep -f "vllm serve.*--port $SERVER_PORT" 2>/dev/null || pgrep -f "vllm.entrypoints.*--port $SERVER_PORT" 2>/dev/null)
+    fi
     if [ -n "$pids" ]; then
-        echo "Killing existing vLLM server(s) on port $VLLM_PORT (pids: $pids)..."
+        echo "Killing existing server(s) on port $SERVER_PORT (pids: $pids)..."
         echo "$pids" | xargs kill 2>/dev/null
         sleep 3
-        # Force kill survivors
-        pids=$(pgrep -f "vllm serve.*--port $VLLM_PORT" 2>/dev/null || pgrep -f "vllm.entrypoints.*--port $VLLM_PORT" 2>/dev/null)
+        if [ "$BACKEND" = "sglang" ]; then
+            pids=$(pgrep -f "sglang.*--port $SERVER_PORT" 2>/dev/null)
+        else
+            pids=$(pgrep -f "vllm serve.*--port $SERVER_PORT" 2>/dev/null || pgrep -f "vllm.entrypoints.*--port $SERVER_PORT" 2>/dev/null)
+        fi
         if [ -n "$pids" ]; then
             echo "$pids" | xargs kill -9 2>/dev/null
             sleep 1
@@ -87,47 +102,59 @@ kill_existing_vllm() {
     fi
 }
 
-start_vllm() {
-    echo "Starting vLLM server: model=$MODEL_PATH tp=$VLLM_TP port=$VLLM_PORT"
-    VLLM_USE_V1=1 uv run --no-sync vllm serve "$MODEL_PATH" \
-        --port "$VLLM_PORT" \
-        --tensor-parallel-size "$VLLM_TP" \
-        --max-model-len "$VLLM_MAX_MODEL_LEN" \
-        &>"$OUTPUT_DIR/vllm.log" &
-    local pid=$!
-    echo "vLLM server starting (pid $pid), waiting for it to be ready..."
+start_server() {
+    if [ "$BACKEND" = "sglang" ]; then
+        SGLANG_DP="${SGLANG_DP:-1}"
+        echo "Starting SGLang server: model=$MODEL_PATH tp=$SERVER_TP dp=$SGLANG_DP port=$SERVER_PORT"
+        uv run --no-sync python -m sglang_router.launch_server \
+            --model-path "$MODEL_PATH" \
+            --port "$SERVER_PORT" \
+            --tp-size "$SERVER_TP" \
+            --dp-size "$SGLANG_DP" \
+            --context-length "$SERVER_MAX_MODEL_LEN" \
+            --dtype bfloat16 \
+            &>"$OUTPUT_DIR/sglang.log" &
+        local pid=$!
+        local log_file="$OUTPUT_DIR/sglang.log"
+    else
+        echo "Starting vLLM server: model=$MODEL_PATH tp=$SERVER_TP port=$SERVER_PORT"
+        VLLM_USE_V1=1 uv run --no-sync vllm serve "$MODEL_PATH" \
+            --port "$SERVER_PORT" \
+            --tensor-parallel-size "$SERVER_TP" \
+            --max-model-len "$SERVER_MAX_MODEL_LEN" \
+            &>"$OUTPUT_DIR/vllm.log" &
+        local pid=$!
+        local log_file="$OUTPUT_DIR/vllm.log"
+    fi
+    echo "$BACKEND server starting (pid $pid), waiting for it to be ready..."
 
-    # Poll until the /models endpoint responds
     local max_wait=300
     local elapsed=0
     while [ $elapsed -lt $max_wait ]; do
-        if curl -sf "http://localhost:${VLLM_PORT}/v1/models" >/dev/null 2>&1; then
-            echo "vLLM server ready (took ${elapsed}s)."
+        if curl -sf "http://localhost:${SERVER_PORT}/v1/models" >/dev/null 2>&1; then
+            echo "$BACKEND server ready (took ${elapsed}s)."
             return 0
         fi
-        # Check if process died
         if ! kill -0 "$pid" 2>/dev/null; then
-            echo "ERROR: vLLM server exited unexpectedly. Check $OUTPUT_DIR/vllm.log" >&2
-            tail -20 "$OUTPUT_DIR/vllm.log" >&2
+            echo "ERROR: $BACKEND server exited unexpectedly. Check $log_file" >&2
+            tail -20 "$log_file" >&2
             exit 1
         fi
         sleep 5
         elapsed=$((elapsed + 5))
     done
-    echo "ERROR: vLLM server not ready after ${max_wait}s. Check $OUTPUT_DIR/vllm.log" >&2
-    tail -20 "$OUTPUT_DIR/vllm.log" >&2
+    echo "ERROR: $BACKEND server not ready after ${max_wait}s. Check $log_file" >&2
+    tail -20 "$log_file" >&2
     exit 1
 }
 
-ensure_vllm() {
-    if check_vllm_serving_model; then
-        echo "vLLM already serving $MODEL_NAME on port $VLLM_PORT, reusing."
+ensure_server() {
+    if check_serving_model; then
+        echo "$BACKEND already serving $MODEL_NAME on port $SERVER_PORT, reusing."
         return 0
     fi
-
-    # Wrong model or no server — kill existing and start fresh
-    kill_existing_vllm
-    start_vllm
+    kill_existing_server
+    start_server
 }
 
 # ============ Paths ============
@@ -142,9 +169,9 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-# ============ Start vLLM (skip for dry_run) ============
+# ============ Start server (skip for dry_run) ============
 if [ "$DRY_RUN" != "true" ]; then
-    ensure_vllm
+    ensure_server
 fi
 
 # ============ Build CLI args ============
@@ -153,7 +180,7 @@ EXTRA_ARGS=""
 if [ "$DRY_RUN" = "true" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --dry_run"
 else
-    EXTRA_ARGS="$EXTRA_ARGS --model $MODEL_PATH --base_url $VLLM_BASE_URL"
+    EXTRA_ARGS="$EXTRA_ARGS --model $MODEL_PATH --base_url $SERVER_BASE_URL"
 fi
 
 if [ "$NORMALIZE_PYTEST" = "true" ]; then
@@ -177,4 +204,4 @@ python3 "$SCRIPT_DIR/scripts/swe_eval_standalone.py" \
     --output_dir "$OUTPUT_DIR" \
     $EXTRA_ARGS
 
-pkill -f "vllm"
+pkill -f "vllm\|sglang"

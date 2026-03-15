@@ -47,9 +47,12 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rllm.environments.swe.trace import (
+    TRACE_FILE_PATH,
     _is_test_file,
     extract_callables_from_ast,
     find_modified_callables_from_sources,
+    find_modified_callables_from_task,
+    make_instance_id,
     normalize_task,
 )
 
@@ -92,33 +95,62 @@ def _non_test_py_diffs(file_diffs: list[dict], task: dict) -> list[dict]:
     return result
 
 
+def classify_bonus_map(result: dict) -> str:
+    """Classify a bonus map result into a case_type string.
+
+    Categories:
+      no_callables    – patch modifies no callable (variables, imports, etc.)
+      static_only     – has callables but no test entries in call graph
+                        (static fallback or crash bug where no F2P test reached)
+      direct          – F2P test calls patched callable directly, no intermediate
+      standard        – F2P test reaches patched callable through intermediate
+                        production-code nodes (graded by hop_max)
+    """
+    patched = result.get("patched_callables", [])
+    nodes = result.get("call_graph_nodes", {})
+    traceable = result.get("traceable", False)
+
+    if not patched:
+        return "no_callables"
+
+    if not traceable:
+        return "no_callables"
+
+    # Count test entries using _is_test_file (matches analyze script logic)
+    n_test_entries = sum(
+        1 for v in nodes.values() if _is_test_file(v.get("file_path", ""))
+    )
+    if n_test_entries == 0:
+        return "static_only"
+
+    # Has test entries — check for intermediate production-code nodes
+    n_intermediate = sum(
+        1 for v in nodes.values()
+        if not _is_test_file(v.get("file_path", ""))
+        and v.get("normalized_distance", 0) > 0
+    )
+    return "standard" if n_intermediate > 0 else "direct"
+
+
 def compute_static_bonus_map(task: dict) -> dict:
     """Compute a static bonus map (patched callables only, all d=0).
 
     No sandbox needed. Extracts modified callables from AST diff.
     """
     task = normalize_task(task)
-    instance_id = task.get("instance_id", task.get("commit_hash", "unknown"))
-    file_diffs = _parse_file_diffs(task)
-    diffs = _non_test_py_diffs(file_diffs, task)
-
-    all_modified = []
-    for fd in diffs:
-        path = fd["header"]["file"]["path"]
-        old_src = fd.get("old_file_content") or ""
-        new_src = fd.get("new_file_content") or ""
-        if old_src and new_src:
-            modified = find_modified_callables_from_sources(old_src, new_src, path)
-            all_modified.extend(modified)
+    instance_id = make_instance_id(task)
+    all_modified = find_modified_callables_from_task(task)
 
     if not all_modified:
-        return {
+        result = {
             "instance_id": instance_id,
             "patched_callables": [],
             "call_graph_nodes": {},
             "hop_max": 0,
             "traceable": False,
         }
+        result["case_type"] = classify_bonus_map(result)
+        return result
 
     # Static mode: every patched callable is at d=0
     call_graph_nodes = {}
@@ -132,13 +164,15 @@ def compute_static_bonus_map(task: dict) -> dict:
             "normalized_distance": 0.0,
         }
 
-    return {
+    result = {
         "instance_id": instance_id,
         "patched_callables": all_modified,
         "call_graph_nodes": call_graph_nodes,
         "hop_max": 0,
         "traceable": True,
     }
+    result["case_type"] = classify_bonus_map(result)
+    return result
 
 
 def compute_dynamic_bonus_map(task: dict) -> dict:
@@ -149,26 +183,15 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
     from rllm.environments.swe.trace import (
         aggregate_traces,
         build_call_graph_from_traces,
-        extract_non_test_patch,
         instrument_sandbox,
-        parse_fault_traces,
+        parse_fault_traces_from_file,
     )
 
     task = normalize_task(task)
-    instance_id = task.get("instance_id", task.get("commit_hash", "unknown"))
+    instance_id = make_instance_id(task)
 
     # Step 1: extract patched callables via static analysis
-    file_diffs = _parse_file_diffs(task)
-    diffs = _non_test_py_diffs(file_diffs, task)
-
-    all_modified = []
-    for fd in diffs:
-        path = fd["header"]["file"]["path"]
-        old_src = fd.get("old_file_content") or ""
-        new_src = fd.get("new_file_content") or ""
-        if old_src and new_src:
-            modified = find_modified_callables_from_sources(old_src, new_src, path)
-            all_modified.extend(modified)
+    all_modified = find_modified_callables_from_task(task)
 
     if not all_modified:
         return {
@@ -183,33 +206,68 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
     # Requires ARL gateway + k8s cluster with warm pools
     from rllm.environments.swe.swe import SWEEnv
 
-    env = SWEEnv.from_dict(task)
+    env = SWEEnv.from_dict({**task, "experiment_id": os.environ.get("ARL_EXPERIMENT_ID", "bonus-maps")})
     try:
         # reset() creates the sandbox session, sets up the env, provisions tools
         env.reset()
 
-        patch_text = extract_non_test_patch(task)
-        instrumented_callables = instrument_sandbox(env, patch_text)
+        instrumented_callables = instrument_sandbox(env, all_modified)
 
         if not instrumented_callables:
             return compute_static_bonus_map(task)
 
-        # Run tests — traces are emitted to stderr by _swe_fault_tracer
+        # Clear any stale trace file before running tests
+        env._run(f"rm -f {TRACE_FILE_PATH}")
+
+        # Run tests — traces are written to /tmp/_swe_fault_traces.jsonl
+        # For R2E-Gym, inject -rA into the test script so pytest emits the
+        # "short test summary info" section (needed to identify F2P tests).
         test_script = (
             "/run_tests.sh" if env.swebench_verified
             else f"{env.alt_path}/run_tests.sh"
         )
+        if not env.swebench_verified:
+            env._run(
+                f"sed -i '/pytest/{{/-rA/!s/pytest/pytest -rA/}}' {test_script}"
+            )
         stdout, stderr, _ = env._execute_raw(
             f"bash {test_script}", timeout=300
         )
         raw_output = f"{stdout}\n{stderr}" if stderr else stdout
 
-        traces = parse_fault_traces(raw_output, instrumented_callables, env.repo_path)
+        # Read traces from file (bypasses pytest capture)
+        traces = parse_fault_traces_from_file(env, instrumented_callables, env.repo_path)
+
+        # Diagnostic: when 0 traces, check if the trace file exists at all
+        if not traces:
+            trace_check, _, tc_exit = env._execute_raw(f"wc -l {TRACE_FILE_PATH} 2>/dev/null || echo MISSING")
+            print(f"  [{instance_id}] 0 traces captured. "
+                  f"Trace file: {trace_check.strip()}. "
+                  f"Instrumented {len(instrumented_callables)} callables.")
+
+        # Identify F2P (fail-to-pass) tests and filter traces
+        f2p_test_funcs = _get_f2p_test_funcs(task, raw_output, env.swebench_verified)
+        if f2p_test_funcs is not None:
+            pre_filter = len(traces)
+            traces = _filter_traces_to_f2p(traces, f2p_test_funcs)
+            print(f"  [{instance_id}] F2P filter: {pre_filter} traces → {len(traces)} "
+                  f"(F2P funcs: {f2p_test_funcs})")
+        else:
+            print(f"  [{instance_id}] WARNING: Could not determine F2P tests, keeping all {len(traces)} traces")
+
         traces = aggregate_traces(traces)
 
-        # Build call graph
-        result = build_call_graph_from_traces(traces, all_modified)
+        # Build call graph, enriching non-patched node line ranges via AST
+        def _read_file(rel_path: str) -> str:
+            from rllm.environments.swe.trace import _read_sandbox_file
+            content, exit_code = _read_sandbox_file(
+                env, f"{env.repo_path}/{rel_path}"
+            )
+            return content if exit_code == 0 else ""
+
+        result = build_call_graph_from_traces(traces, all_modified, file_reader=_read_file)
         result["instance_id"] = instance_id
+        result["case_type"] = classify_bonus_map(result)
         return result
 
     except Exception as e:
@@ -218,6 +276,83 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
         return compute_static_bonus_map(task)
     finally:
         env.close()
+
+
+def _get_f2p_test_funcs(
+    task: dict, raw_output: str, swebench_verified: bool
+) -> set[str] | None:
+    """Identify fail-to-pass test function names.
+
+    For SWE-Bench Verified: uses the ``FAIL_TO_PASS`` field from the task.
+    For R2E-Gym: parses pytest output for FAILED tests (tests that fail on
+    unpatched code are the F2P tests we want).
+
+    Returns a set of **bare** test function names (e.g. ``test_foo``), or
+    None if we can't determine F2P tests (in which case all traces are kept).
+    """
+    if swebench_verified:
+        f2p_raw = task.get("FAIL_TO_PASS")
+        if f2p_raw:
+            if isinstance(f2p_raw, str):
+                try:
+                    f2p_list = json.loads(f2p_raw)
+                except (json.JSONDecodeError, TypeError):
+                    f2p_list = [f2p_raw]
+            elif isinstance(f2p_raw, list):
+                f2p_list = f2p_raw
+            else:
+                return None
+            # Extract bare function names:
+            # "tests/test_x.py::TestClass::test_method" → "test_method"
+            # "tests/test_x.py::test_func" → "test_func"
+            funcs = set()
+            for t in f2p_list:
+                parts = str(t).split("::")
+                funcs.add(parts[-1])  # bare function name
+            return funcs if funcs else None
+    else:
+        # R2E-Gym: parse pytest output for FAILED tests (= F2P on buggy code).
+        # parse_log_pytest returns names like "TestClass.test_method" or "test_func"
+        # (it splits on "::" and joins with ".").
+        from rllm.environments.swe.reward import parse_log_pytest
+
+        test_status = parse_log_pytest(raw_output)
+        if not test_status:
+            return None
+        failed_funcs = set()
+        for name, status in test_status.items():
+            if status in ("FAILED", "ERROR"):
+                # name may be "TestClass.test_method" or just "test_func"
+                # Extract bare function name (last dot-segment)
+                bare = name.rsplit(".", 1)[-1] if "." in name else name
+                if bare:  # filter out empty strings from malformed lines
+                    failed_funcs.add(bare)
+        return failed_funcs if failed_funcs else None
+
+    return None
+
+
+def _filter_traces_to_f2p(
+    traces: list[list[dict]], f2p_test_funcs: set[str]
+) -> list[list[dict]]:
+    """Keep only traces whose call chain originates from an F2P test function.
+
+    A trace originates from an F2P test if the outermost test frame (the
+    first frame in a test file) has a func_name in *f2p_test_funcs*.
+    *f2p_test_funcs* contains **bare** function names (e.g. ``test_foo``).
+    """
+    filtered = []
+    for trace in traces:
+        # Find the outermost test frame (first frame in a test file)
+        for frame in trace:
+            file_path = frame.get("file_path", "")
+            if not _is_test_file(file_path):
+                continue
+            func_name = frame.get("func_name", "")
+            if func_name in f2p_test_funcs:
+                filtered.append(trace)
+                break
+    return filtered
 
 
 def _process_one(args):

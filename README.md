@@ -98,7 +98,7 @@ ls data/swe/
 #   R2EGym_SFT_Trajectories.parquet (SFT warm-up data)
 ```
 
-`swe-setup.sh` does: `uv venv --python 3.11` + `uv pip install -e ".[verl]"` + kubectl setup + dataset download. All subsequent shell scripts use `uv run --no-sync python3 ...` internally.
+`swe-setup.sh` does: `uv venv --python 3.11` + `uv pip install -e ".[verl-vllm]"` + kubectl setup + dataset download. All subsequent shell scripts use `uv run --no-sync python3 ...` internally.
 
 ## Quick Start
 
@@ -155,6 +155,94 @@ bash swe-eval-standalone.sh Qwen3-4B 5
 # Dry run: test harness on unmodified code (no model needed)
 DRY_RUN=true bash swe-eval-standalone.sh dummy
 ```
+
+## Data Collection (Rejection / DPO Sampling)
+
+`swe-data-rejection.sh` collects trajectories from any OpenAI-compatible model — either a closed-source API or a local vLLM server — and saves them as training data.
+
+Two **modes** control what gets saved:
+
+| Mode | Keeps | Output columns | Use for |
+|------|-------|----------------|---------|
+| `rejection` (default) | Passing trajectories only (reward = 1.0) | `messages` | SFT warm-up |
+| `dpo` | All trajectories; pairs pass ↔ fail per instance | `chosen`, `rejected`, `instance_id` | DPO/preference training |
+
+Two **backends** control how the model is called:
+
+| Backend | Description | Auth |
+|---------|-------------|------|
+| `api` (default) | Closed-source model via OpenAI-compatible API | `API_KEY` / `OPENAI_API_KEY` |
+| `vllm` | Local model served by vLLM — auto-starts if not running | none |
+
+Both modes and both backends support **checkpoint/resume**: re-running with the same `OUTPUT_FILE` continues where an interrupted run left off.
+
+### Usage
+
+```bash
+# Rejection sampling from a closed-source API
+source swe-data-rejection.sh gpt-4o
+
+# DPO sampling from a closed-source API
+MODE=dpo source swe-data-rejection.sh gpt-4o
+
+# Custom endpoint (Azure, proxy, etc.)
+BASE_URL=https://my-proxy.example.com/v1 API_KEY=sk-xxx \
+    source swe-data-rejection.sh claude-opus-4-6
+
+# Rejection sampling with a local vLLM server
+BACKEND=vllm source swe-data-rejection.sh Qwen3-8B
+
+# DPO sampling with a local vLLM server
+BACKEND=vllm MODE=dpo source swe-data-rejection.sh Qwen3-8B
+
+# Custom root dir (model path = $ROOT_DIR/models/$MODEL_NAME)
+BACKEND=vllm source swe-data-rejection.sh Qwen3-8B /mnt/bn/my-bucket
+
+# Resume an interrupted run — same OUTPUT_FILE, same flags
+BACKEND=vllm MODE=dpo source swe-data-rejection.sh Qwen3-8B
+```
+
+vLLM lifecycle mirrors `swe-eval-standalone.sh`: the server stays running after the script exits and is reused on the next call. To stop it manually: `pkill -f "vllm serve"`.
+
+### Output files
+
+**Rejection mode** — parquet with a single `messages` column (list of `{role, content}` dicts), identical format to `R2EGym_SFT_Trajectories.parquet`:
+
+```
+data/swe/collected/<model>_rejection.parquet
+```
+
+**DPO mode** — parquet with `chosen`, `rejected`, `instance_id` columns.
+Two JSONL sidecar files accumulate the raw cache and act as the live checkpoint; the final parquet is written at the end:
+
+```
+data/swe/collected/<model>_dpo.parquet          ← final paired output
+data/swe/collected/<model>_dpo.pos.jsonl        ← passing trajectory cache (resume state)
+data/swe/collected/<model>_dpo.neg.jsonl        ← failing trajectory cache (resume state)
+```
+
+Each positive trajectory is paired with one negative from the same `instance_id` (round-robin when counts differ). Positives with no matching negative are excluded from the final parquet.
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODE` | `rejection` | `rejection` or `dpo` |
+| `BACKEND` | `api` | `api` or `vllm` |
+| `API_KEY` | `$OPENAI_API_KEY` | API key (api backend) |
+| `BASE_URL` | `https://api.openai.com/v1` | API endpoint (api backend) |
+| `TARGET` | `5000` | Stop after this many *passing* trajectories |
+| `N_PARALLEL` | `128` | Max concurrent trajectories |
+| `MAX_STEPS` | `50` | Max agent steps per trajectory |
+| `MAX_RESPONSE_TOKENS` | `20000` | Max tokens per model response |
+| `TEMPERATURE` | `1.0` | Sampling temperature |
+| `TRAJECTORY_TIMEOUT` | `1200` | Wall-clock timeout per trajectory (s) |
+| `OUTPUT_DIR` | `data/swe/collected` | Output directory |
+| `OUTPUT_FILE` | auto | Override output parquet path |
+| `CHECKPOINT_INTERVAL` | `50` | (rejection mode) checkpoint every N new passes |
+| `VLLM_PORT` | `8000` | vLLM server port (vllm backend) |
+| `VLLM_TP` | `8` | Tensor parallel size (vllm backend) |
+| `VLLM_MAX_MODEL_LEN` | `163840` | Max model length for vLLM (vllm backend) |
 
 ## P2A: Process Supervision via Program Analysis
 
@@ -224,6 +312,139 @@ Both report four metrics:
 2. **On-graph View Density** — fraction of *view steps* (steps with read actions) hitting the call graph
 3. **Avg Steps to Root Cause** — step index of first patched callable hit (lower is better)
 4. **Root Cause Coverage** — fraction of trajectories reading at least one patched callable
+
+## Trajectory Analyzer
+
+Browser-based UI for visualizing and analyzing agent trajectories — no server needed, open the HTML file directly.
+
+```bash
+open trajectory_analyzer.html
+# or: python3 -m http.server 8000 && open http://localhost:8000/trajectory_analyzer.html
+```
+
+### Two tabs
+
+**Dashboard** — macro view of a full experiment run.
+
+**Inspector** — micro view of individual trajectories.
+
+---
+
+### Dashboard: analyzing an eval experiment
+
+1. Click **Open Experiment Folder** and select the experiment output directory.
+   The folder must contain a `*_n1.jsonl` metadata file and `chat_completions/eval.jsonl`.
+2. Summary cards appear immediately:
+   - **Total** — trajectories loaded (and how many are missing from SWE-Bench 500)
+   - **Success (loaded)** — pass rate among loaded trajectories
+   - **Success (SWE-B)** — pass rate over the full 500-instance SWE-Bench Verified set
+3. Charts: termination reasons, tool usage, success by repo, step distribution, error rate, etc.
+4. The **Trajectory Table** at the bottom lists every trajectory. Click any row to jump to the Inspector.
+
+**Filters and sorting:** use the text filter box, reward/termination dropdowns, or click any column header.
+
+---
+
+### Inspector: stepping through a trajectory
+
+1. **From Dashboard:** click any table row — the Inspector opens with that trajectory pre-selected.
+2. **From training JSONL:** switch to the Inspector tab, click **Open Completion JSONL**, and select a `.jsonl` file (one JSON message array per line, no instance_id required).
+3. Use the **trajectory dropdown** to switch between trajectories. Use the search box to filter by instance ID.
+4. The **Action Sequence strip** shows every step as a colored dot. Click any dot to jump to that step's detail panel.
+5. The **step detail panel** shows:
+   - Tool name, command, parameters
+   - Execution output (truncated long outputs are expandable)
+   - For `str_replace` edits: a unified diff (`+`/`-` with red/green lines)
+   - For errors: a red error badge
+
+**Step color coding:**
+
+| Color | Meaning |
+|-------|---------|
+| Blue | `file_editor` / `str_replace_editor` |
+| Green | `execute_bash` |
+| Yellow | `search` |
+| Purple | `finish` / `submit` |
+| Red border | step returned an error |
+
+---
+
+### Golden Patch analysis
+
+Compares agent steps against the ground-truth bug location (callable-level).
+
+**Step 1 — Export golden patch data** (one-time, run from repo root):
+
+```bash
+uv run python3 scripts/export_golden_patches.py
+# Output: data/swe/golden_patches.json
+```
+
+By default reads both `data/swe/SWE_Bench_Verified.parquet` and `data/swe/R2E_Gym_Subset.parquet`. Pass custom paths as positional arguments or use `--out` for a different output path.
+
+**Step 2 — Load in the browser:**
+
+On the **Dashboard** load bar: click **Load Golden Patches JSON** and select `golden_patches.json`. Then click **✨ Golden** to toggle highlighting on.
+
+**Step 3 — Read the results:**
+
+**Macro (Dashboard):** the **Fault Localization Analysis** panel shows:
+
+| Row | Meaning |
+|-----|---------|
+| 🎯 Located | Agent viewed or edited the exact golden callable |
+| ↳ Viewed + Edited / Only viewed / Only edited | Sub-breakdown |
+| ↳ Located & Success / Failure | Cross-tab with reward |
+| ❌ Not Located | Agent never reached the golden callable |
+| ↳ Not Located & Success | "Lucky fix" — patched without locating |
+| 📄 No-callable patch | Golden patch only changes non-callable code — excluded from localization stats |
+
+**Micro (Inspector):** each step in the action strip gets a colored outline based on its relationship to the golden patch:
+
+| Color | Level | Meaning |
+|-------|-------|---------|
+| Blue outline | `view-file` | Viewed a file that contains the golden callable |
+| Cyan outline | `view-callable` | Viewed the exact line range of the golden callable |
+| Yellow outline | `edit-file` | Edited a file that contains the golden callable |
+| Orange outline | `edit-callable` | Edited code that includes the golden callable |
+
+The trajectory dropdown shows compact tags for quick scanning:
+`🎯` viewed callable · `✏️` edited callable · `🔍` viewed file only · `📁` edited file only · `[📄]` no-callable patch
+
+**Training JSONL matching:** when a `golden_patches.json` is loaded and you open a training JSONL file in the Inspector, the tool automatically tries to resolve each trajectory's instance ID by matching the `<github_issue>` text against stored problem-statement fingerprints, so golden patch highlighting works even without explicit instance IDs.
+
+---
+
+### Scripts referenced
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/export_golden_patches.py` | Export callable-level golden patch data from parquet(s) to JSON |
+| `scripts/analyze_dataset_traceability.py` | Batch classify instances by traceability (static or bonus-map mode) |
+| `scripts/precompute_bonus_maps.py` | Precompute dynamic call-graph bonus maps (needs ARL sandbox) |
+
+## Sandbox Explorer
+
+Interactive web UI for exploring any instance's ARL sandbox environment. Useful for debugging bonus map construction, inspecting trace output, and manually running commands inside containers.
+
+```bash
+# Launch (default port 7860, default gateway http://118.145.210.10:8080)
+./sandbox_explorer.sh
+
+# Custom port or gateway
+./sandbox_explorer.sh 8080 http://YOUR_GATEWAY:8080
+```
+
+Then open `http://localhost:7860`.
+
+**Features:**
+- Browse all R2E-Gym and SWE-Bench instances with search
+- One-click sandbox creation for any instance (calls `env.reset()`)
+- Interactive terminal with command history (↑/↓), configurable timeout
+- Real-time stdout/stderr with color coding
+- Gateway URL and experiment ID configurable from the UI
+
+**Files:** `sandbox_explorer.sh`, `sandbox_explorer.html`, `scripts/sandbox_server.py`
 
 ## Table 1 Experiments
 
@@ -300,14 +521,22 @@ swe-train-rl.sh                    # RL training entry point
 swe-train-sft.sh                   # SFT warm-up
 swe-train-table1.sh                # Table 1 experiment orchestration
 swe-eval-standalone.sh             # Standalone eval (auto-starts vLLM)
+swe-data-rejection.sh              # Rejection / DPO trajectory collection
 swe-precompute-bonus-maps.sh       # P2A bonus map precomputation
 swe-setup.sh                       # Environment setup
+sandbox_explorer.sh                # Launch sandbox explorer UI
+sandbox_explorer.html              # Sandbox explorer frontend
+trajectory_analyzer.html           # Trajectory analyzer UI (open directly in browser)
 
 scripts/
+  collect_swe_trajectories.py      # Rejection / DPO sampling core (API or vLLM)
   precompute_bonus_maps.py         # P2A bonus map precomputation
+  export_golden_patches.py         # Export callable-level golden patch data for trajectory analyzer
+  analyze_dataset_traceability.py  # Classify instances by traceability
   swe_eval_standalone.py           # Eval logic (agent or dry-run)
   analyze_localization.py          # Post-hoc localization analysis
   swe_report.py                    # Results reporting
+  sandbox_server.py                # Sandbox explorer backend (Flask)
   patch_verl.sh                    # VeRL runtime patches
   data/swe_dataset.py              # Dataset download/preparation
 

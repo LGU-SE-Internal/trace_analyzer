@@ -94,7 +94,7 @@ verl manages vLLM internally for on-device training and inference.
 
 **Requirements:**
 - Local GPU(s) with sufficient VRAM
-- verl installed (`uv pip install -e .[verl]`)
+- verl installed (`uv pip install -e .[verl-vllm]`)
 
 **Run training:**
 ```bash

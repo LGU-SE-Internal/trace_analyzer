@@ -1,19 +1,35 @@
 #!/usr/bin/env python3
-"""Analyze the traceability of SWE dataset instances.
+"""Analyze and classify SWE dataset instances by traceability.
 
-For each instance, compares the old and new source (pre-/post-patch) via AST
-to determine how many callables are *modified in-place* — the ones that can
-be instrumented for fault tracing.
+Two modes:
 
-Supports both:
-  - **R2E-Gym** (``parsed_commit_content`` → ``file_diffs``)
-  - **SWE-Bench Verified** (``parsed_commit`` → ``file_diffs``)
+1. **Static mode** (parquet only): Analyzes AST diffs to determine which
+   instances have in-place modified callables (potential traceability).
+
+2. **Bonus map mode** (requires precomputed bonus maps): Reads the actual
+   bonus map JSONs produced by ``precompute_bonus_maps.py`` and classifies
+   each instance into a fine-grained taxonomy:
+
+   1. Logic bugs (traceable)
+      1.1 Direct  — test → patched callable, no intermediate nodes
+      1.2 Standard — test → intermediate(s) → patched callable
+   2. Crash/untraceable bugs
+      2.1 Has patched callables but 0 traces captured
+      2.2 Has patched callables, marked traceable, but no test entries (static-only fallback)
+   3. No callables — AST diff found no modified callables
+   4. Data inconsistency — patched callables exist but couldn't be instrumented
 
 Usage::
 
+    # Static analysis only (fast, no sandbox needed)
     python scripts/analyze_dataset_traceability.py data/swe/R2E_Gym_Subset.parquet
-    python scripts/analyze_dataset_traceability.py data/swe/SWE_Bench_Verified.parquet
-    python scripts/analyze_dataset_traceability.py data/swe/*.parquet
+
+    # With precomputed bonus maps for fine-grained classification
+    python scripts/analyze_dataset_traceability.py data/swe/R2E_Gym_Subset.parquet \\
+        --bonus_maps_dir data/swe/bonus_maps
+
+    # Analyze a directory of bonus map JSONs directly (no parquet needed)
+    python scripts/analyze_dataset_traceability.py --bonus_maps_dir data/swe/bonus_maps
 """
 
 from __future__ import annotations
@@ -30,9 +46,9 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rllm.environments.swe.trace import (
-    CallableInfo,
     _is_test_file,
     extract_callables_from_ast,
+    make_instance_id,
     normalize_task,
 )
 
@@ -57,10 +73,7 @@ def _parse_file_diffs(task: dict) -> list[dict]:
     return []
 
 
-def _non_test_py_diffs(
-    file_diffs: list[dict],
-    task: dict,
-) -> list[dict]:
+def _non_test_py_diffs(file_diffs: list[dict], task: dict) -> list[dict]:
     """Filter file_diffs to non-test .py files."""
     relevant = task.get("relevant_files")
     allow_set = set(relevant) if relevant is not None else None
@@ -80,16 +93,85 @@ def _non_test_py_diffs(
     return result
 
 
-# ── per-instance analysis ──────────────────────────────────────────────────
+# ── bonus map classification ──────────────────────────────────────────────
 
 
-def analyze_instance(task: dict) -> dict:
-    """Return analysis dict for a single task instance."""
+def classify_bonus_map(bm: dict) -> dict:
+    """Classify a single bonus map JSON into the taxonomy.
+
+    Returns a dict with keys:
+        category: top-level category string
+        subcategory: fine-grained subcategory string
+        n_patched: number of patched callables
+        n_nodes: number of call graph nodes
+        n_test_entries: number of test entry nodes (d=1.0)
+        n_intermediate: number of intermediate nodes (0 < d < 1)
+        hop_max: maximum hop distance
+        instance_id: instance identifier
+    """
+    instance_id = bm.get("instance_id", "unknown")
+    patched = bm.get("patched_callables", [])
+    nodes = bm.get("call_graph_nodes", {})
+    hop_max = bm.get("hop_max", 0)
+    traceable = bm.get("traceable", False)
+
+    n_patched = len(patched)
+    n_nodes = len(nodes)
+
+    # Count node types
+    n_test_entries = 0
+    n_intermediate = 0
+    n_patched_nodes = 0
+    for key, node in nodes.items():
+        nd = node.get("normalized_distance", 0)
+        if _is_test_file(node.get("file_path", "")):
+            n_test_entries += 1
+        elif nd == 0.0:
+            n_patched_nodes += 1
+        else:
+            n_intermediate += 1
+
+    result = {
+        "instance_id": instance_id,
+        "n_patched": n_patched,
+        "n_nodes": n_nodes,
+        "n_test_entries": n_test_entries,
+        "n_intermediate": n_intermediate,
+        "hop_max": hop_max,
+    }
+
+    # Classification logic
+    if n_patched == 0:
+        result["category"] = "no_callables"
+        result["subcategory"] = "no_callables"
+    elif not traceable:
+        result["category"] = "untraceable"
+        result["subcategory"] = "untraceable_no_trace"
+    elif n_test_entries == 0:
+        # Has patched callables, marked traceable, but no test entries
+        # This is the static-only fallback case (only patched nodes at d=0)
+        result["category"] = "untraceable"
+        result["subcategory"] = "static_only"
+    elif n_intermediate > 0:
+        result["category"] = "traceable"
+        result["subcategory"] = "standard"
+    else:
+        result["category"] = "traceable"
+        result["subcategory"] = "direct"
+
+    return result
+
+
+# ── static AST analysis (original functionality) ─────────────────────────
+
+
+def analyze_instance_static(task: dict) -> dict:
+    """Return static analysis dict for a single task instance."""
     task = normalize_task(task)
     file_diffs = _parse_file_diffs(task)
     diffs = _non_test_py_diffs(file_diffs, task)
 
-    traceable: list[str] = []  # qualified names
+    traceable: list[str] = []
     added: list[str] = []
     deleted: list[str] = []
     has_non_callable_changes = False
@@ -115,13 +197,8 @@ def analyze_instance(task: dict) -> dict:
         for name in old_names - new_names:
             deleted.append(f"{path}::{name}")
 
-        # Detect non-callable changes: file content differs but no callable-level diffs
         callable_changes = (
-            sum(
-                1
-                for n in old_names & new_names
-                if old_callables[n].source != new_callables[n].source
-            )
+            sum(1 for n in old_names & new_names if old_callables[n].source != new_callables[n].source)
             + len(new_names - old_names)
             + len(old_names - new_names)
         )
@@ -137,7 +214,7 @@ def analyze_instance(task: dict) -> dict:
     }
 
 
-def categorize(r: dict) -> str:
+def categorize_static(r: dict) -> str:
     has_t = bool(r["traceable"])
     has_a = bool(r["added"])
     has_d = bool(r["deleted"])
@@ -157,7 +234,124 @@ def categorize(r: dict) -> str:
     return "only_" + "+".join(parts)
 
 
-# ── main ───────────────────────────────────────────────────────────────────
+# ── bonus map report ─────────────────────────────────────────────────────
+
+
+def load_bonus_maps(bonus_dir: str) -> dict[str, dict]:
+    """Load all bonus map JSONs from a directory, keyed by instance_id."""
+    maps = {}
+    for p in Path(bonus_dir).glob("*.json"):
+        try:
+            bm = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        iid = bm.get("instance_id", p.stem)
+        maps[iid] = bm
+    return maps
+
+
+def print_bonus_map_report(bonus_dir: str, maps: dict[str, dict]) -> None:
+    total = len(maps)
+    if total == 0:
+        print(f"No bonus maps found in {bonus_dir}")
+        return
+
+    classifications = [classify_bonus_map(bm) for bm in maps.values()]
+
+    # Top-level categories
+    cat_counts = Counter(c["category"] for c in classifications)
+    sub_counts = Counter(c["subcategory"] for c in classifications)
+
+    print("=" * 72)
+    print(f"  Bonus Map Analysis  ({total} instances from {bonus_dir})")
+    print("=" * 72)
+    print()
+
+    # Overview bar
+    n_traceable = cat_counts.get("traceable", 0)
+    bar_w = 40
+    filled = round(n_traceable / total * bar_w) if total else 0
+    bar = "#" * filled + "." * (bar_w - filled)
+    print(f"  Traceable  [{bar}]  {n_traceable}/{total} ({n_traceable/total*100:.1f}%)")
+    print()
+
+    # Category breakdown
+    print("  Category breakdown:")
+    cat_order = ["traceable", "untraceable", "no_callables"]
+    for cat in cat_order:
+        cnt = cat_counts.get(cat, 0)
+        if cnt == 0:
+            continue
+        print(f"    {cat:<30s} {cnt:>5}  ({cnt/total*100:.1f}%)")
+    print()
+
+    # Subcategory breakdown
+    print("  Subcategory breakdown:")
+    sub_order = [
+        ("standard", "traceable + intermediate nodes"),
+        ("direct", "traceable, test→patched directly"),
+        ("static_only", "has callables, no test entries (0 traces)"),
+        ("untraceable_no_trace", "has callables, marked untraceable"),
+        ("no_callables", "no modified callables detected"),
+    ]
+    for subcat, desc in sub_order:
+        cnt = sub_counts.get(subcat, 0)
+        if cnt == 0:
+            continue
+        print(f"    {subcat:<24s} {cnt:>5}  ({cnt/total*100:.1f}%)  — {desc}")
+    # Any subcategories not in the predefined order
+    for subcat, cnt in sub_counts.most_common():
+        if subcat not in dict(sub_order):
+            print(f"    {subcat:<24s} {cnt:>5}  ({cnt/total*100:.1f}%)")
+    print()
+
+    # Traceable stats
+    traceable_cls = [c for c in classifications if c["category"] == "traceable"]
+    if traceable_cls:
+        hops = [c["hop_max"] for c in traceable_cls]
+        intermediates = [c["n_intermediate"] for c in traceable_cls]
+        test_entries = [c["n_test_entries"] for c in traceable_cls]
+
+        print("  Traceable instance statistics:")
+        print(f"    hop_max:        mean={sum(hops)/len(hops):.1f}  "
+              f"median={sorted(hops)[len(hops)//2]}  max={max(hops)}")
+        print(f"    intermediate:   mean={sum(intermediates)/len(intermediates):.1f}  "
+              f"median={sorted(intermediates)[len(intermediates)//2]}  max={max(intermediates)}")
+        print(f"    test_entries:   mean={sum(test_entries)/len(test_entries):.1f}  "
+              f"median={sorted(test_entries)[len(test_entries)//2]}  max={max(test_entries)}")
+        print()
+
+        # Hop distribution
+        hop_dist = Counter(hops)
+        print("  hop_max distribution (traceable):")
+        for h in sorted(hop_dist):
+            cnt = hop_dist[h]
+            print(f"    hop_max={h}: {cnt:>5} instances  ({cnt/len(traceable_cls)*100:.1f}%)")
+        print()
+
+    # Examples per subcategory
+    print("  Examples:")
+    by_sub: dict[str, list[dict]] = {}
+    for c in classifications:
+        by_sub.setdefault(c["subcategory"], []).append(c)
+
+    for subcat, _ in sub_order:
+        items = by_sub.get(subcat, [])
+        if not items:
+            continue
+        print(f"    [{subcat}]")
+        for c in items[:3]:
+            extras = []
+            if c["n_intermediate"] > 0:
+                extras.append(f"intermediate={c['n_intermediate']}")
+            if c["n_test_entries"] > 0:
+                extras.append(f"tests={c['n_test_entries']}")
+            extras.append(f"hop_max={c['hop_max']}")
+            print(f"      {c['instance_id']}  ({', '.join(extras)})")
+    print()
+
+
+# ── static report (original) ─────────────────────────────────────────────
 
 
 def analyze_parquet(path: str) -> list[dict]:
@@ -166,13 +360,12 @@ def analyze_parquet(path: str) -> list[dict]:
     for idx, row in df.iterrows():
         extra_raw = row.get("extra_info", "{}")
         task = json.loads(extra_raw) if isinstance(extra_raw, str) else dict(extra_raw)
-        r = analyze_instance(task)
+        r = analyze_instance_static(task)
+        task = normalize_task(task)
         r["index"] = idx
         r["repo"] = task.get("repo_name", task.get("repo", "?"))
-        r["instance_id"] = task.get(
-            "instance_id", task.get("commit_hash", "?")
-        )[:24]
-        r["category"] = categorize(r)
+        r["instance_id"] = make_instance_id(task)
+        r["category"] = categorize_static(r)
         results.append(r)
 
         done = idx + 1
@@ -182,17 +375,17 @@ def analyze_parquet(path: str) -> list[dict]:
     return results
 
 
-def print_report(path: str, results: list[dict]) -> None:
+def print_static_report(path: str, results: list[dict]) -> None:
     total = len(results)
     cat_counts = Counter(r["category"] for r in results)
     traceable = [r for r in results if r["category"] == "traceable"]
 
     print("=" * 72)
-    print(f"  {Path(path).name}  ({total} instances)")
+    print(f"  {Path(path).name}  ({total} instances) — Static AST Analysis")
     print("=" * 72)
     print()
 
-    # ── overview ──
+    # Overview
     n_t = len(traceable)
     n_nt = total - n_t
     bar_w = 40
@@ -201,7 +394,7 @@ def print_report(path: str, results: list[dict]) -> None:
     print(f"  Traceable  [{bar}]  {n_t}/{total} ({n_t/total*100:.1f}%)")
     print()
 
-    # ── non-traceable breakdown ──
+    # Non-traceable breakdown
     if n_nt:
         print("  Non-traceable breakdown:")
         for cat, cnt in cat_counts.most_common():
@@ -210,7 +403,7 @@ def print_report(path: str, results: list[dict]) -> None:
             print(f"    {cat:<44s} {cnt:>5}  ({cnt/total*100:.1f}%)")
         print()
 
-    # ── callable count distribution ──
+    # Callable count distribution
     t_counts = [len(r["traceable"]) for r in traceable]
     if t_counts:
         dist = Counter(t_counts)
@@ -221,7 +414,7 @@ def print_report(path: str, results: list[dict]) -> None:
         print(f"    mean={mean:.2f}  max={max(t_counts)}")
         print()
 
-    # ── co-occurrence (among traceable) ──
+    # Co-occurrence
     if traceable:
         also_a = sum(1 for r in traceable if r["added"])
         also_d = sum(1 for r in traceable if r["deleted"])
@@ -232,11 +425,9 @@ def print_report(path: str, results: list[dict]) -> None:
         print(f"    + non-callable changes:     {also_nc:>5} ({also_nc/len(traceable)*100:.1f}%)")
         print()
 
-    # ── examples ──
+    # Examples
     print("  Examples:")
-    for cat in ["traceable"] + [
-        c for c, _ in cat_counts.most_common() if c != "traceable"
-    ]:
+    for cat in ["traceable"] + [c for c, _ in cat_counts.most_common() if c != "traceable"]:
         items = [r for r in results if r["category"] == cat]
         if not items:
             continue
@@ -249,20 +440,36 @@ def print_report(path: str, results: list[dict]) -> None:
         print()
 
 
+# ── main ──────────────────────────────────────────────────────────────────
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Analyze traceability of SWE dataset instances."
     )
     parser.add_argument(
         "parquet_files",
-        nargs="+",
-        help="Path(s) to parquet dataset files",
+        nargs="*",
+        help="Path(s) to parquet dataset files (for static analysis)",
+    )
+    parser.add_argument(
+        "--bonus_maps_dir",
+        help="Directory containing precomputed bonus map JSONs",
     )
     args = parser.parse_args()
 
-    for path in args.parquet_files:
+    if not args.parquet_files and not args.bonus_maps_dir:
+        parser.error("Provide parquet file(s) and/or --bonus_maps_dir")
+
+    # Static analysis from parquet
+    for path in args.parquet_files or []:
         results = analyze_parquet(path)
-        print_report(path, results)
+        print_static_report(path, results)
+
+    # Bonus map analysis
+    if args.bonus_maps_dir:
+        maps = load_bonus_maps(args.bonus_maps_dir)
+        print_bonus_map_report(args.bonus_maps_dir, maps)
 
 
 if __name__ == "__main__":
