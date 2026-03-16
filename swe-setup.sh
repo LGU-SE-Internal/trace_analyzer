@@ -60,3 +60,4 @@ if [ "$use_byted_venv" = true ]; then
     uv pip install bytedray[default,data,serve,bytedance]==2.10.0.34 byted-wandb --index-url https://bytedpypi.byted.org/simple/
     uv pip install "fastapi>=0.107.0,<0.113.0" # strange bug: bytedray, vllm, fastapi are not compatible
 fi
+uv pip install "setuptools>=64,<70"

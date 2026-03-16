@@ -16,8 +16,8 @@ MODEL_NAME=${1:?'Usage: bash swe-train-sft.sh <model_name> [root_dir]'}
 ROOT_DIR=${2:-'/mnt/bn/trae-research-models/xujunjielong'}
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-sft}"
 NNODES=${ARNOLD_WORKER_NUM:-1}
-BS_PER_NODE=${BS_PER_NODE:-256}
-FINAL_STEP=${FINAL_STEP:-200}
+BS_PER_NODE=${BS_PER_NODE:-512}
+FINAL_STEP=${FINAL_STEP:-202}
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
 
@@ -40,12 +40,13 @@ else
 fi
 
 # ============ Run Training ============
-SFT_DATA=data/swe/R2EGym_SFT_Trajectories_Qwen3.parquet
+SFT_DATA=data/swe/R2EGym_SFT_Trajectories_PerStep_LastThink.parquet
 if [ ! -f "$SFT_DATA" ]; then
-    echo "Preprocessing SFT data for Qwen3 (wrapping reasoning in <think> tags)..."
-    uv run python scripts/prepare_sft_data.py \
+    echo "Preprocessing SFT data for Qwen3-Style Completion (per-step split, prompt/response format)..."
+    python3 scripts/prepare_sft_data.py \
         --input data/swe/R2EGym_SFT_Trajectories.parquet \
-        --output "$SFT_DATA"
+        --output "$SFT_DATA" \
+        --model_path $ROOT_DIR/models/$MODEL_NAME
 fi
 
 torchrun \
@@ -53,12 +54,13 @@ torchrun \
     -m verl.trainer.fsdp_sft_trainer \
     data.train_files=$SFT_DATA \
     data.val_files=$SFT_DATA \
-    data.multiturn.enable=true \
-    data.multiturn.messages_key=messages \
+    data.prompt_key=prompt \
+    data.response_key=response \
+    'data.apply_chat_template_kwargs.chat_template={{ messages[0].content }}' \
     data.max_length=32768 \
     data.truncation=right \
     data.train_batch_size=$((BS_PER_NODE * NNODES)) \
-    data.micro_batch_size_per_gpu=2 \
+    data.micro_batch_size_per_gpu=4 \
     optim.lr=1e-5 \
     trainer.total_epochs=2 \
     model.partial_pretrain=$ROOT_DIR/models/$MODEL_NAME \
@@ -72,5 +74,5 @@ torchrun \
 
 python3 -m verl.model_merger merge \
     --backend fsdp \
-    --local_dir $ROOT_DIR/experiments/verl/$EXPERIMENT_NAME/global_step_$STEP \
+    --local_dir $ROOT_DIR/experiments/verl/$EXPERIMENT_NAME/global_step_$FINAL_STEP \
     --target_dir $ROOT_DIR/models/$MODEL_NAME-P2A_SFT
