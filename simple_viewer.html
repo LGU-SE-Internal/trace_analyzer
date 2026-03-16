@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Simple Trajectory Viewer</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #242837;
+  --border: #2e3348;
+  --text: #e1e4ed;
+  --text-dim: #8b90a5;
+  --accent: #6c8cff;
+  --green: #4ade80;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --orange: #fb923c;
+  --radius: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+::-webkit-scrollbar { width:8px; height:8px; }
+::-webkit-scrollbar-track { background:var(--bg); }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+::-webkit-scrollbar-thumb:hover { background:var(--text-dim); }
+* { scrollbar-width:thin; scrollbar-color:var(--border) var(--bg); }
+body { font-family: 'SF Mono','Fira Code','Consolas', monospace; background:var(--bg); color:var(--text); font-size:13px; line-height:1.5; }
+button { font-family:inherit; cursor:pointer; border:none; font-size:13px; }
+input, select { font-family:inherit; font-size:13px; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:6px 10px; }
+
+.app { display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+
+/* Header */
+.header { padding:10px 20px; background:var(--surface); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; flex-shrink:0; }
+.header h1 { font-size:15px; font-weight:600; color:var(--accent); }
+
+/* Load bar */
+.load-bar { padding:10px 20px; background:var(--surface); border-bottom:1px solid var(--border); display:flex; gap:10px; align-items:center; flex-shrink:0; }
+.file-pick { position:relative; display:inline-block; }
+.file-pick input[type=file] { position:absolute; opacity:0; width:100%; height:100%; cursor:pointer; top:0; left:0; }
+.file-pick .lbl { padding:5px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius); display:inline-block; cursor:pointer; font-size:12px; }
+.load-status { font-size:11px; color:var(--accent); }
+
+/* Main layout */
+.main { display:flex; flex:1; overflow:hidden; }
+
+/* Left: trajectory list */
+.traj-list { width:320px; border-right:1px solid var(--border); overflow-y:auto; flex-shrink:0; background:var(--surface); }
+.traj-item { padding:8px 14px; border-bottom:1px solid var(--border); cursor:pointer; }
+.traj-item:hover { background:var(--surface2); }
+.traj-item.selected { background:var(--accent); color:#fff; }
+.traj-item .traj-idx { font-size:11px; color:var(--text-dim); }
+.traj-item.selected .traj-idx { color:rgba(255,255,255,.7); }
+.traj-item .traj-info { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* Right: inspector */
+.inspector { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+.inspector-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-dim); font-size:14px; }
+
+/* Step list + detail */
+.insp-body { display:flex; flex:1; overflow:hidden; }
+.step-list { width:320px; border-right:1px solid var(--border); overflow-y:auto; flex-shrink:0; background:var(--surface); }
+.step-row { padding:6px 10px; border-bottom:1px solid var(--border); cursor:pointer; display:flex; align-items:center; gap:6px; font-size:12px; border-left:3px solid transparent; transition:background .1s; }
+.step-row:hover { background:var(--surface2); }
+.step-row.selected { background:var(--surface2); border-left-color:var(--accent); }
+.step-row.s-success { border-left-color:var(--green); }
+.step-row.s-error { border-left-color:var(--red); }
+.step-row.s-warning { border-left-color:var(--yellow); }
+.step-row.selected.s-success,
+.step-row.selected.s-error,
+.step-row.selected.s-warning { border-left-color:var(--accent); }
+.step-num { font-size:11px; color:var(--text-dim); min-width:24px; }
+.step-tool-badge { padding:1px 6px; border-radius:3px; font-size:10px; font-weight:600; white-space:nowrap; flex-shrink:0; background:var(--surface2); }
+.step-file { font-size:10px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
+.step-icons { display:flex; gap:2px; flex-shrink:0; font-size:11px; }
+
+/* Badges */
+.badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:500; }
+.bg { background:rgba(74,222,128,.15); color:var(--green); }
+.br { background:rgba(248,113,113,.15); color:var(--red); }
+.by { background:rgba(251,191,36,.15); color:var(--yellow); }
+.bb { background:rgba(108,140,255,.15); color:var(--accent); }
+
+/* Detail panel */
+.step-detail { flex:1; overflow-y:auto; padding:16px; }
+.step-detail-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-dim); }
+
+.sd-header { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; padding-bottom:10px; border-bottom:1px solid var(--border); }
+.section { margin-bottom:14px; }
+.section-title { font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--text-dim); margin-bottom:6px; cursor:pointer; user-select:none; display:flex; align-items:center; gap:6px; }
+.section-title::before { content:'\25BC'; font-size:9px; }
+.section-title.collapsed::before { content:'\25B6'; }
+.section.collapsed .section-body { display:none; }
+.section-body { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:10px; white-space:pre-wrap; word-break:break-word; max-height:400px; overflow-y:auto; font-size:12px; line-height:1.45; }
+.section-body.think { border-left:3px solid var(--yellow); color:var(--text-dim); font-style:italic; }
+.section-body.action { border-left:3px solid var(--accent); }
+.section-body.obs { border-left:3px solid var(--green); }
+.section-body.empty { color:var(--text-dim); font-style:italic; }
+
+/* Diff view */
+.diff-view { font-size:11px; line-height:1.55; border-radius:4px; overflow:auto; max-height:420px; border:1px solid var(--border); background:var(--bg); }
+.diff-line { display:flex; white-space:pre; min-width:0; }
+.diff-line-del { background:rgba(248,113,113,.18); color:var(--red); }
+.diff-line-ins { background:rgba(74,222,128,.18); color:var(--green); }
+.diff-line-ctx { color:var(--text-dim); }
+.diff-gutter { min-width:20px; text-align:center; flex-shrink:0; user-select:none; opacity:.75; border-right:1px solid var(--border); margin-right:8px; padding:0 3px; }
+.diff-line-del .diff-gutter { border-right-color:rgba(248,113,113,.3); }
+.diff-line-ins .diff-gutter { border-right-color:rgba(74,222,128,.3); }
+.diff-hunk-sep { color:var(--accent); background:rgba(108,140,255,.07); padding:2px 8px; font-size:10px; border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
+.diff-line-text { overflow:hidden; text-overflow:ellipsis; flex:1; padding-right:8px; }
+
+/* Search */
+.search-box { padding:8px 14px; border-bottom:1px solid var(--border); }
+.search-box input { width:100%; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="header">
+    <h1>Simple Trajectory Viewer</h1>
+  </div>
+
+  <div class="load-bar">
+    <div class="file-pick">
+      <span class="lbl" id="file-label">Choose .jsonl file</span>
+      <input type="file" accept=".jsonl,.json" id="file-input">
+    </div>
+    <span class="load-status" id="load-status"></span>
+  </div>
+
+  <div class="main">
+    <div class="traj-list">
+      <div class="search-box"><input type="text" placeholder="Filter trajectories..." id="traj-search"></div>
+      <div id="traj-list-items"></div>
+    </div>
+    <div class="inspector">
+      <div class="inspector-empty" id="inspector-placeholder">Load a .jsonl file to begin</div>
+      <div id="inspector-content" style="display:none;flex-direction:column;">
+        <div class="insp-body">
+          <div class="step-list" id="step-list"></div>
+          <div class="step-detail" id="step-detail">
+            <div class="step-detail-empty">Click a step to view details</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const App = {
+  trajectories: [],
+  filtered: [],
+  selectedTraj: -1,
+  steps: [],
+  selectedStep: -1,
+
+  init() {
+    document.getElementById('file-input').addEventListener('change', e => this.loadFile(e.target.files[0]));
+    document.getElementById('traj-search').addEventListener('input', e => this.filterTrajectories(e.target.value));
+  },
+
+  async loadFile(file) {
+    if (!file) return;
+    document.getElementById('file-label').textContent = file.name;
+    document.getElementById('load-status').textContent = 'Loading...';
+    const text = await file.text();
+    const lines = text.trim().split('\n');
+    this.trajectories = [];
+    for (let i = 0; i < lines.length; i++) {
+      try {
+        const obj = JSON.parse(lines[i]);
+        const msgs = obj.messages || [];
+        const steps = this.extractSteps(msgs);
+        const preview = this.getPreview(msgs);
+        this.trajectories.push({ index: i, messages: msgs, steps, preview });
+      } catch(e) { console.warn(`Line ${i}:`, e); }
+    }
+    document.getElementById('load-status').textContent = `${this.trajectories.length} trajectories loaded`;
+    this.filtered = this.trajectories;
+    this.renderTrajList();
+  },
+
+  getPreview(messages) {
+    if (messages.length < 2) return '(empty)';
+    const userMsg = messages[1]?.content || messages[0]?.content || '';
+    const titleMatch = userMsg.match(/\*\*Title:\*\*\s*(.+)/i) || userMsg.match(/Title:\s*(.+)/i);
+    if (titleMatch) return titleMatch[1].substring(0, 80);
+    const firstLine = userMsg.split('\n').find(l => l.trim().length > 10) || userMsg;
+    return firstLine.substring(0, 80);
+  },
+
+  // ── Parsing ──────────────────────────────────────────
+
+  extractSteps(messages) {
+    const steps = [];
+    if (!messages || messages.length < 3) return steps;
+    for (let i = 2; i < messages.length; i += 2) {
+      const assistantMsg = messages[i];
+      if (!assistantMsg || assistantMsg.role !== 'assistant') continue;
+      const userObs = (i + 1 < messages.length) ? messages[i + 1] : null;
+      const content = assistantMsg.content || '';
+      const action = this.extractFunctionCall(content);
+      const { thought, thinkMode } = this.extractThink(content, action.raw);
+      const observation = userObs?.content || '';
+      steps.push({
+        index: steps.length,
+        thought,
+        thinkMode,
+        toolName: action.toolName,
+        toolDisplay: action.toolDisplay,
+        parameters: action.parameters,
+        rawAction: action.raw,
+        observation,
+        hasError: this.detectError(observation),
+        isTruncated: observation.includes('<response clipped>') || observation.includes('truncated'),
+      });
+    }
+    return steps;
+  },
+
+  extractThink(content, actionRaw) {
+    // Think = everything that's NOT the action
+    let nonAction = actionRaw ? content.replace(actionRaw, '') : content;
+    nonAction = nonAction.trim();
+    const hasThinkTags = /<think>[\s\S]*?<\/think>/.test(nonAction);
+    if (hasThinkTags) {
+      const stripped = nonAction.replace(/<think>([\s\S]*?)<\/think>/g, '$1').trim();
+      return { thought: stripped, thinkMode: 'formatted' };
+    }
+    return { thought: nonAction, thinkMode: nonAction ? 'free' : '' };
+  },
+
+  extractFunctionCall(content) {
+    const m = content.match(/<function=(\w+)>([\s\S]*?)<\/function>/);
+    if (!m) {
+      const noThink = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      if (noThink.length > 0) return { toolName: 'text', toolDisplay: 'text', parameters: {}, raw: noThink };
+      return { toolName: 'unknown', toolDisplay: 'unknown', parameters: {}, raw: '' };
+    }
+    const params = {};
+    const re = /<parameter=(\w+)>([\s\S]*?)<\/parameter>/g;
+    let pm;
+    while ((pm = re.exec(m[2])) !== null) params[pm[1]] = pm[2];
+
+    const toolName = m[1];
+    // Build display name: for file_editor/str_replace_editor, append :command
+    let toolDisplay = toolName;
+    if (params.command) toolDisplay = toolName + ':' + params.command;
+
+    return { toolName, toolDisplay, parameters: params, raw: m[0] };
+  },
+
+  detectError(obs) {
+    if (!obs) return false;
+    const excerpt = obs.substring(0, 900);
+    const s = excerpt.toLowerCase();
+    // Successful file_editor output — avoid false positives from file content
+    if (s.includes("here's the result of running `cat -n`")) return false;
+    if (s.includes('file created at')) return false;
+    if (s.includes('file has been edited')) return false;
+    if (s.includes('review the file and make sure')) return false;
+    // Explicit error signals
+    if (/\berror:/i.test(excerpt)) return true;
+    if (s.includes('traceback (most recent call last)')) return true;
+    if (s.includes('command not found')) return true;
+    if (s.includes('no such file or directory')) return true;
+    if (s.includes('permission denied')) return true;
+    if (s.includes('your proposed edit has introduced new syntax error')) return true;
+    return false;
+  },
+
+  // ── Rendering ────────────────────────────────────────
+
+  filterTrajectories(query) {
+    const q = query.toLowerCase();
+    this.filtered = q ? this.trajectories.filter(t => t.preview.toLowerCase().includes(q) || String(t.index).includes(q)) : this.trajectories;
+    this.renderTrajList();
+  },
+
+  renderTrajList() {
+    const container = document.getElementById('traj-list-items');
+    container.innerHTML = this.filtered.map((t, fi) =>
+      `<div class="traj-item" data-fi="${fi}" onclick="App.selectTraj(${fi})">
+        <div class="traj-idx">#${t.index} &middot; ${t.steps.length} steps</div>
+        <div class="traj-info">${this.esc(t.preview)}</div>
+      </div>`
+    ).join('');
+  },
+
+  selectTraj(fi) {
+    this.selectedTraj = fi;
+    const traj = this.filtered[fi];
+    if (!traj) return;
+    this.steps = traj.steps;
+    this.selectedStep = -1;
+
+    document.querySelectorAll('.traj-item').forEach(el => el.classList.remove('selected'));
+    document.querySelector(`.traj-item[data-fi="${fi}"]`)?.classList.add('selected');
+
+    document.getElementById('inspector-placeholder').style.display = 'none';
+    const ic = document.getElementById('inspector-content');
+    ic.style.display = 'flex';
+
+    const sl = document.getElementById('step-list');
+    sl.innerHTML = this.steps.map((s, i) => {
+      const status = s.hasError ? 's-error' : s.isTruncated ? 's-warning' : 's-success';
+      const filePath = s.parameters.path || s.parameters.file || '';
+      const fileShort = filePath ? filePath.split('/').slice(-1)[0] : '';
+      let icons = '';
+      if (s.hasError) icons += '<span style="color:var(--red);">E</span>';
+      else if (s.isTruncated) icons += '<span style="color:var(--yellow);">T</span>';
+      else icons += '<span style="color:var(--green);">OK</span>';
+      return `<div class="step-row ${status}" data-si="${i}" onclick="App.selectStep(${i})">
+        <span class="step-num">${i + 1}</span>
+        <span class="step-tool-badge">${this.esc(this.trunc(s.toolDisplay, 24))}</span>
+        <span class="step-file">${this.esc(fileShort)}</span>
+        <span class="step-icons">${icons}</span>
+      </div>`;
+    }).join('');
+
+    document.getElementById('step-detail').innerHTML = '<div class="step-detail-empty">Click a step to view details</div>';
+  },
+
+  selectStep(si) {
+    this.selectedStep = si;
+    const step = this.steps[si];
+    if (!step) return;
+
+    document.querySelectorAll('.step-row').forEach(el => el.classList.remove('selected'));
+    document.querySelector(`.step-row[data-si="${si}"]`)?.classList.add('selected');
+
+    const panel = document.getElementById('step-detail');
+    let html = '';
+
+    // Header
+    html += '<div class="sd-header">';
+    html += `<strong>Step ${si + 1}</strong>`;
+    html += `<span class="step-tool-badge" style="font-size:12px;">${this.esc(step.toolDisplay)}</span>`;
+    if (step.parameters.path) html += `<span class="badge bb" style="font-size:11px;">${this.esc(step.parameters.path.split('/').slice(-2).join('/'))}</span>`;
+    if (step.hasError) html += '<span class="badge br">Error</span>';
+    if (step.isTruncated) html += '<span class="badge by">Truncated</span>';
+    html += '</div>';
+
+    // Think
+    const modeLabel = step.thinkMode === 'formatted' ? ' <span style="color:var(--accent);font-size:10px;text-transform:none;letter-spacing:0;">(formatted thinking)</span>'
+                     : step.thinkMode === 'free' ? ' <span style="color:var(--orange);font-size:10px;text-transform:none;letter-spacing:0;">(free thinking)</span>' : '';
+    const thinkCollapsed = step.thought ? '' : ' collapsed';
+    html += `<div class="section${thinkCollapsed}">
+      <div class="section-title${thinkCollapsed}" onclick="App.toggleSection(this)">Think${modeLabel}</div>
+      <div class="section-body think ${step.thought ? '' : 'empty'}">${this.esc(step.thought || '(empty)')}</div>
+    </div>`;
+
+    // Action
+    html += `<div class="section">
+      <div class="section-title" onclick="App.toggleSection(this)">Action</div>
+      <div class="section-body action ${step.rawAction ? '' : 'empty'}">${this.highlightXml(step.rawAction || '(no action detected)')}</div>`;
+    // Inline diff for str_replace
+    if (step.parameters.command === 'str_replace' && step.parameters.old_str != null) {
+      const ops = this.diffLines(step.parameters.old_str || '', step.parameters.new_str || '');
+      const diffHtml = this.renderLineDiff(ops);
+      html += '<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">';
+      html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Diff preview:</div>';
+      if (diffHtml) {
+        html += diffHtml;
+      } else {
+        html += `<div style="padding:6px;border-radius:4px;white-space:pre-wrap;font-size:11px;background:rgba(248,113,113,.1);color:var(--red);margin-bottom:4px;">${this.esc(step.parameters.old_str||'')}</div>`;
+        html += `<div style="padding:6px;border-radius:4px;white-space:pre-wrap;font-size:11px;background:rgba(74,222,128,.1);color:var(--green);">${this.esc(step.parameters.new_str||'')}</div>`;
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // Observation
+    const obs = step.observation.length > 5000 ? step.observation.substring(0, 5000) + '\n\u2026 (truncated for display)' : step.observation;
+    html += `<div class="section">
+      <div class="section-title" onclick="App.toggleSection(this)">Observation</div>
+      <div class="section-body obs ${obs ? '' : 'empty'}">${this.esc(obs || '(empty)')}</div>
+    </div>`;
+
+    panel.innerHTML = html;
+  },
+
+  // ── Utilities ────────────────────────────────────────
+
+  toggleSection(titleEl) {
+    const section = titleEl.parentElement;
+    section.classList.toggle('collapsed');
+    titleEl.classList.toggle('collapsed');
+  },
+
+  highlightXml(text) {
+    return this.esc(text)
+      .replace(/&lt;function=(\w+)&gt;/g, '&lt;function=<strong style="color:var(--accent);">$1</strong>&gt;')
+      .replace(/&lt;parameter=(\w+)&gt;/g, '&lt;parameter=<strong style="color:var(--yellow);">$1</strong>&gt;')
+      .replace(/&lt;\/function&gt;/g, '&lt;<span style="color:var(--accent);">/function</span>&gt;')
+      .replace(/&lt;\/parameter&gt;/g, '&lt;<span style="color:var(--yellow);">/parameter</span>&gt;');
+  },
+
+  diffLines(oldStr, newStr) {
+    const a = (oldStr || '').split('\n');
+    const b = (newStr || '').split('\n');
+    const m = a.length, n = b.length;
+    if (m * n > 250000) return null;
+    const dp = Array.from({length: m + 1}, () => new Int32Array(n + 1));
+    for (let i = 1; i <= m; i++)
+      for (let j = 1; j <= n; j++)
+        dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
+    const ops = [];
+    let i = m, j = n;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && a[i-1] === b[j-1]) { ops.unshift({t:'eq',l:a[i-1]}); i--; j--; }
+      else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) { ops.unshift({t:'ins',l:b[j-1]}); j--; }
+      else { ops.unshift({t:'del',l:a[i-1]}); i--; }
+    }
+    return ops;
+  },
+
+  renderLineDiff(ops, ctx = 3) {
+    if (!ops) return null;
+    const changed = new Set();
+    ops.forEach((op, i) => { if (op.t !== 'eq') changed.add(i); });
+    if (!changed.size) return '<div style="padding:6px 10px;color:var(--text-dim);font-size:11px;">(no textual differences)</div>';
+    const visible = new Set();
+    changed.forEach(i => { for (let j = Math.max(0, i - ctx); j <= Math.min(ops.length - 1, i + ctx); j++) visible.add(j); });
+    let html = '<div class="diff-view">';
+    let gap = false;
+    ops.forEach((op, i) => {
+      if (!visible.has(i)) { gap = true; return; }
+      if (gap) { html += '<div class="diff-hunk-sep">@@ \u2026 @@</div>'; gap = false; }
+      const cls = op.t === 'del' ? 'diff-line-del' : op.t === 'ins' ? 'diff-line-ins' : 'diff-line-ctx';
+      const pfx = op.t === 'del' ? '\u2212' : op.t === 'ins' ? '+' : ' ';
+      html += `<div class="diff-line ${cls}"><span class="diff-gutter">${pfx}</span><span class="diff-line-text">${this.esc(op.l)}</span></div>`;
+    });
+    html += '</div>';
+    return html;
+  },
+
+  esc(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  },
+
+  trunc(s, n) { return s.length > n ? s.substring(0, n - 1) + '\u2026' : s; },
+};
+
+App.init();
+</script>
+</body>
+</html>

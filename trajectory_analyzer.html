@@ -132,8 +132,8 @@ tr.clickable { cursor:pointer; }
 .step-file { font-size:10px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
 .step-icons { display:flex; gap:2px; flex-shrink:0; font-size:12px; }
 
-/* Step detail (right column) */
-.step-detail { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow-y:auto; }
+/* Step detail (right column) — sticky so it stays visible when scrolling through long step lists */
+.step-detail { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow-y:auto; position:sticky; top:20px; align-self:start; max-height:calc(100vh - 60px); }
 .step-detail-empty { display:flex; align-items:center; justify-content:center; height:200px; color:var(--text-dim); }
 .step-detail-content { padding:14px; }
 .sd-header { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; padding-bottom:10px; border-bottom:1px solid var(--border); }
@@ -233,13 +233,13 @@ tr.clickable { cursor:pointer; }
 <div class="app">
   <div class="header">
     <h1>SWE Trajectory Analyzer</h1>
-    <span class="version">v1.3</span>
+    <span class="version">v1.4</span>
     <div style="flex:1;"></div>
   </div>
   <div class="tabs">
-    <button class="tab active" data-tab="dashboard">Dashboard</button>
-    <button class="tab" data-tab="inspector">Trajectory Inspector</button>
+    <button class="tab active" data-tab="dashboard">Experiment Evaluation</button>
     <button class="tab" data-tab="comparison">Experiment Comparison</button>
+    <button class="tab" data-tab="dpo">Data Collection</button>
   </div>
 
   <!-- ── Tab: Dashboard ──────────────────────────── -->
@@ -267,27 +267,18 @@ tr.clickable { cursor:pointer; }
         The analyzer will automatically find <code>*_n1.jsonl</code> and <code>chat_completions/eval.jsonl</code>.
       </div>
       <div id="dashboard-results" style="display:none"></div>
-    </div>
-  </div>
-
-  <!-- ── Tab: Inspector ──────────────────────────── -->
-  <div id="tab-inspector" class="tab-pane hidden">
-    <div class="load-bar">
-      <label>Trajectory:</label>
-      <select id="traj-selector" style="min-width:340px;"><option value="">-- Load data first --</option></select>
-      <input type="text" id="traj-search" placeholder="Filter by instance_id…" style="width:200px;">
-      <span style="color:var(--border);margin:0 4px;">|</span>
-      <label style="color:var(--text-dim);font-size:12px;">Completion JSONL:</label>
-      <div class="file-pick">
-        <input type="file" id="completion-file-input" accept=".jsonl,.json">
-        <span class="lbl" id="completion-file-label">Import completions…</span>
+      <div id="eval-inspector" style="display:none">
+        <div class="load-bar" style="margin-bottom:8px;">
+          <button class="load-btn sec" onclick="UI.backToDashboard()" style="font-size:12px;">← Back to Dashboard</button>
+          <select id="traj-selector" style="min-width:340px;"><option value="">-- Select trajectory --</option></select>
+          <input type="text" id="traj-search" placeholder="Filter by instance_id…" style="width:200px;">
+          <span style="color:var(--border);margin:0 4px;">|</span>
+          <button id="golden-toggle-btn-mirror" class="golden-btn" title="Toggle golden patch highlighting — load golden_patches.json first">✨ Golden Patch</button>
+        </div>
+        <div id="inspector-content">
+          <div style="padding:40px;text-align:center;color:var(--text-dim);">Select a trajectory to inspect.</div>
+        </div>
       </div>
-      <span class="load-status" id="completion-load-status" style="font-size:12px;"></span>
-      <span style="color:var(--border);margin:0 4px;">|</span>
-      <button id="golden-toggle-btn-mirror" class="golden-btn" title="Toggle golden patch highlighting — load golden_patches.json from Dashboard first">✨ Golden Patch</button>
-    </div>
-    <div class="content" id="inspector-content">
-      <div style="padding:40px;text-align:center;color:var(--text-dim);">Select a trajectory to inspect.</div>
     </div>
   </div>
 
@@ -319,6 +310,33 @@ tr.clickable { cursor:pointer; }
       <div id="comp-results" style="margin-top:16px;"></div>
     </div>
   </div>
+
+  <!-- ── Tab: Data Collection ──────────────────────── -->
+  <div id="tab-dpo" class="tab-pane hidden">
+    <div class="load-bar">
+      <label>Collection directory:</label>
+      <div class="file-pick">
+        <input type="file" id="dpo-dir-input" webkitdirectory>
+        <span class="lbl" id="dpo-dir-label">Select folder…</span>
+      </div>
+      <span class="load-status" id="dpo-load-status"></span>
+      <span style="color:var(--border);margin:0 4px;">|</span>
+      <button id="dpo-golden-toggle-btn" class="golden-btn" title="Toggle golden patch analysis (load from Dashboard tab first)">✨ Golden Patch</button>
+      <span style="font-size:12px;color:var(--text-dim);" id="dpo-golden-load-status"></span>
+    </div>
+    <div class="content" id="dpo-content">
+      <div id="dpo-empty" style="padding:40px;text-align:center;color:var(--text-dim);">
+        Select a data collection directory (e.g. <code>collected-dpo-100-131072/</code>).<br>
+        The analyzer will find <code>*.pos.jsonl</code> and <code>*.neg.jsonl</code> files automatically.
+      </div>
+      <div id="dpo-results" style="display:none">
+        <!-- Macro dashboard -->
+        <div id="dpo-dashboard"></div>
+        <!-- Micro inspector -->
+        <div id="dpo-inspector" style="display:none"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -344,12 +362,13 @@ const DataParser = {
       if (!assistantMsg || assistantMsg.role !== 'assistant') continue;
       const userObs = (i + 1 < messages.length) ? messages[i + 1] : null;
       const content = assistantMsg.content || '';
-      const thought = this.extractThink(content);
       const action = this.extractFunctionCall(content);
+      const { thought, thinkMode } = this.extractThink(content, action.raw);
       const observation = userObs?.content || '';
       steps.push({
         index: steps.length,
         thought,
+        thinkMode,
         toolName: action.toolName,
         parameters: action.parameters,
         rawAction: action.raw,
@@ -362,9 +381,16 @@ const DataParser = {
     return steps;
   },
 
-  extractThink(content) {
-    const m = content.match(/<think>([\s\S]*?)<\/think>/);
-    return m ? m[1].trim() : '';
+  extractThink(content, actionRaw) {
+    // Think = everything that's NOT the action
+    let nonAction = actionRaw ? content.replace(actionRaw, '') : content;
+    nonAction = nonAction.trim();
+    const hasThinkTags = /<think>[\s\S]*?<\/think>/.test(nonAction);
+    if (hasThinkTags) {
+      const stripped = nonAction.replace(/<think>([\s\S]*?)<\/think>/g, '$1').trim();
+      return { thought: stripped, thinkMode: 'formatted' };
+    }
+    return { thought: nonAction, thinkMode: nonAction ? 'free' : '' };
   },
 
   extractFunctionCall(content) {
@@ -816,7 +842,6 @@ const UI = {
     sortDir: 'asc',
     currentTraj: null,       // { p, micro, repeatMap, loopSteps, index }
     goldenPatches: null,     // {instance_id: {files, callables: [{file,name,qname,start,end}]}}
-    goldenPsLookup: null,    // {ps_fingerprint: instance_id} for JSONL matching
     goldenHighlight: false,
     selectedStepIndex: null,
   },
@@ -851,6 +876,31 @@ const UI = {
 
     document.getElementById('comp-load-btn').addEventListener('click', () => this.loadComparison());
 
+    // DPO directory picker
+    const dpoInput = document.getElementById('dpo-dir-input');
+    dpoInput.addEventListener('change', e => {
+      const files = e.target.files;
+      if (!files.length) return;
+      const name = files[0].webkitRelativePath.split('/')[0];
+      document.getElementById('dpo-dir-label').textContent = name;
+      DPO.loadFromDirectory(files);
+    });
+
+    document.getElementById('dpo-golden-toggle-btn').addEventListener('click', () => {
+      if (!UI.state.goldenPatches) return;
+      UI.state.goldenHighlight = !UI.state.goldenHighlight;
+      UI.syncGoldenBtns();
+      // Re-render current trajectory if showing one
+      if (DPO.state.currentTraj) {
+        const label = DPO.state.currentTraj._dpoLabel;
+        const d = DPO.state.byInstance[DPO.state._currentInstanceId];
+        if (d) {
+          const idx = d[label].indexOf(DPO.state.currentTraj);
+          if (idx >= 0) DPO.showTrajectory(label, idx);
+        }
+      }
+    });
+
     // Update dir label text when comp dir picked
     document.querySelectorAll('.comp-dir-input').forEach(input => {
       input.addEventListener('change', e => {
@@ -859,14 +909,6 @@ const UI = {
         const name = files[0].webkitRelativePath.split('/')[0];
         e.target.closest('.file-pick').querySelector('.comp-dir-label').textContent = name;
       });
-    });
-
-    // Completion-only JSONL import for Inspector
-    document.getElementById('completion-file-input').addEventListener('change', async e => {
-      const file = e.target.files[0];
-      if (!file) return;
-      document.getElementById('completion-file-label').textContent = file.name;
-      await this.loadCompletionFile(file);
     });
 
     // Golden patch highlighting
@@ -895,117 +937,24 @@ const UI = {
     document.getElementById('golden-toggle-btn-mirror').addEventListener('click', toggleGolden);
   },
 
-  // ─── Completion-only import (no metadata) ────────────────
-
-  // Normalize issue text for PS-fingerprint matching.
-  // Must produce the same result as _normalize_ps() in export_golden_patches.py.
-  _normalizeIssueText(raw) {
-    return raw
-      .replace(/\*\*[A-Za-z ]+:\*\*\s*/g, '')   // strip **Title:** **Description:** etc.
-      .replace(/^\s*\[ISSUE\]\s*/g, '')           // strip leading [ISSUE] prefix
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 250);
+  // ─── Inline Inspector Navigation ─────────────────────────────
+  inspectFromTable(index) {
+    document.getElementById('dashboard-results').style.display = 'none';
+    document.getElementById('eval-inspector').style.display = '';
+    document.getElementById('traj-selector').value = index;
+    this.showTrajectory(index);
   },
 
-  // Extract repo hint from testbed paths in observations (e.g. /testbed/numpy/… → "numpy")
-  _repoFromMessages(messages) {
-    for (const m of messages) {
-      if (m.role !== 'user') continue;
-      const c = typeof m.content === 'string' ? m.content : '';
-      const match = c.match(/\/testbed\/([^\/\s]+)\//);
-      if (match) return match[1];
-    }
-    return null;
-  },
-
-  async loadCompletionFile(file) {
-    const status = document.getElementById('completion-load-status');
-    status.textContent = 'Parsing…';
-    try {
-      const text = await file.text();
-      const lines = text.trim().split('\n');
-      const paired = [];
-      for (let i = 0; i < lines.length; i++) {
-        let messages;
-        try { messages = JSON.parse(lines[i]); } catch(e) { continue; }
-        if (!Array.isArray(messages)) continue;
-        const steps = DataParser.extractSteps(messages);
-
-        const sysMsg = messages[0]?.content || '';
-        const userMsg = (messages.find(m => m.role === 'user') || {}).content || '';
-        let instance_id = null;
-
-        // Always extract and cache the normalized issue fingerprint so we can
-        // retry matching later when golden patches are loaded.
-        let psFingerprint = null;
-        const issueMatch = userMsg.match(/<github_issue>([\s\S]*?)<\/github_issue>/);
-        if (issueMatch) psFingerprint = this._normalizeIssueText(issueMatch[1]);
-
-        // 1. Explicit instance_id in system message
-        const idMatch = sysMsg.match(/instance[_\s]id[:\s]+([^\s\n,]+)/i);
-        if (idMatch) instance_id = idMatch[1];
-
-        // 2. PS-fingerprint lookup (only if golden patches already loaded)
-        if (!instance_id && psFingerprint && this.state.goldenPsLookup) {
-          instance_id = this.state.goldenPsLookup[psFingerprint] || null;
-        }
-
-        // Fallback: use repo hint + index for a more readable ID
-        const repoHint = this._repoFromMessages(messages);
-        if (!instance_id) instance_id = repoHint ? `${repoHint}/traj_${i}` : `traj_${i}`;
-
-        paired.push({
-          instance_id,
-          uid: `completion_${i}`,
-          repo: repoHint || '-',
-          reward: null,
-          termination_reason: '(unknown)',
-          steps,
-          messages,
-          numSteps: steps.length,
-          tokens: messages.reduce((a, m) => a + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length), 0),
-          _completionOnly: true,
-          _index: i,
-          _psFingerprint: psFingerprint,   // cached for deferred resolution
-        });
-      }
-      if (!paired.length) { status.textContent = 'Error: no valid message arrays found.'; return; }
-      this.state.paired = paired;
-      this.populateSelector();
-      const resolved = paired.filter(p => !p.instance_id.match(/^(traj_\d+|[^/]+\/traj_\d+)$/)).length;
-      status.textContent = `Loaded ${paired.length} trajectories from "${file.name}"` +
-        (resolved ? ` (${resolved} IDs resolved)` : '');
-      this.switchTab('inspector');
-    } catch(e) {
-      status.textContent = 'Error: ' + e.message;
-      console.error(e);
-    }
-  },
-
-  // After golden patches load, retry resolving any unmatched completion trajectories.
-  _resolveCompletionIds() {
-    if (!this.state.paired || !this.state.goldenPsLookup) return 0;
-    let count = 0;
-    this.state.paired.forEach(p => {
-      if (!p._completionOnly) return;
-      // Already resolved (not a traj_N placeholder)
-      if (p._psFingerprint === undefined) return;
-      if (!p.instance_id.match(/^(traj_\d+|[^/]+\/traj_\d+)$/)) return;
-      const resolved = p._psFingerprint && this.state.goldenPsLookup[p._psFingerprint];
-      if (resolved) {
-        p.instance_id = resolved;
-        count++;
-      }
-    });
-    return count;
+  backToDashboard() {
+    document.getElementById('eval-inspector').style.display = 'none';
+    document.getElementById('dashboard-results').style.display = '';
   },
 
   // ─── Golden patch data loading ─────────────────────────────
   syncGoldenBtns() {
     const on = this.state.goldenHighlight;
     const loaded = !!this.state.goldenPatches;
-    ['golden-toggle-btn', 'golden-toggle-btn-mirror'].forEach(id => {
+    ['golden-toggle-btn', 'golden-toggle-btn-mirror', 'dpo-golden-toggle-btn'].forEach(id => {
       const btn = document.getElementById(id);
       if (!btn) return;
       btn.classList.toggle('loaded', loaded);
@@ -1019,19 +968,12 @@ const UI = {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      // Extract the special fingerprint lookup key (if present)
-      const psLookup = data['__ps_lookup__'] || {};
       delete data['__ps_lookup__'];
       const count = Object.keys(data).length;
       if (!count) { status.textContent = 'Error: empty JSON'; return; }
       this.state.goldenPatches = data;
-      this.state.goldenPsLookup = psLookup;
       this.syncGoldenBtns();
-
-      // Backfill: resolve any completion trajectories that were loaded before golden patches
-      const resolved = this._resolveCompletionIds();
-      const resolvedNote = resolved ? ` (+${resolved} IDs resolved)` : '';
-      status.textContent = `${count} instances${resolvedNote}`;
+      status.textContent = `${count} instances`;
 
       if (this.state.paired) { this.populateSelector(); this.renderGoldenStats(); }
     } catch(e) {
@@ -1307,7 +1249,7 @@ const UI = {
 
   switchTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    ['dashboard','inspector','comparison'].forEach(t => {
+    ['dashboard','comparison','dpo'].forEach(t => {
       document.getElementById('tab-' + t).classList.toggle('hidden', t !== tab);
     });
   },
@@ -1442,7 +1384,7 @@ const UI = {
     Object.keys(a.terminationDist).forEach(t => { html += `<option value="${t}">${t}</option>`; });
     html += '</select></div>';
     html += '<div class="tbl-wrap"><table id="traj-table"><thead><tr>';
-    html += '<th data-col="_index">#</th><th data-col="instance_id">Instance ID</th><th data-col="repo">Repo</th><th data-col="reward">Reward</th><th data-col="termination_reason">Termination</th><th data-col="numSteps">Steps</th><th data-col="tools">Tools</th><th data-col="_located">Located</th>';
+    html += '<th data-col="_index">#</th><th data-col="instance_id">Instance ID</th><th data-col="repo">Repo</th><th data-col="reward">Reward</th><th data-col="termination_reason">Termination</th><th data-col="numSteps">Steps</th><th data-col="tools">Tools</th><th data-col="_located">Located</th><th>Action</th>';
     html += '</tr></thead><tbody id="traj-tbody"></tbody></table></div>';
 
     container.innerHTML = html;
@@ -1513,13 +1455,12 @@ const UI = {
         <td>${p.numSteps}</td>
         <td style="font-size:11px;color:var(--text-dim);">${tools}</td>
         <td>${locatedCell}</td>
+        <td><button class="load-btn sec" style="font-size:11px;padding:3px 10px;" onclick="event.stopPropagation();UI.inspectFromTable(${p._index})">Inspect</button></td>
       </tr>`;
     }).join('');
     tbody.querySelectorAll('tr.clickable').forEach(tr=>{
       tr.addEventListener('click',()=>{
-        this.switchTab('inspector');
-        document.getElementById('traj-selector').value = tr.dataset.idx;
-        this.showTrajectory(parseInt(tr.dataset.idx));
+        UI.inspectFromTable(parseInt(tr.dataset.idx));
       });
     });
   },
@@ -1536,8 +1477,8 @@ const UI = {
     sel.innerHTML = '<option value="">-- Select trajectory --</option>';
     this.state.paired.forEach((p,i)=>{
       const goldenTag = goldenOn ? this.getGoldenTagStr(p) : '';
-      const prefix = p._completionOnly ? `[${i}]` : `${p.reward>0?'✅':'❌'} [${i}]`;
-      const suffix = p._completionOnly ? `(${p.numSteps} steps)` : `(${p.termination_reason})`;
+      const prefix = `${p.reward>0?'✅':'❌'} [${i}]`;
+      const suffix = `(${p.termination_reason})`;
       sel.innerHTML += `<option value="${i}">${prefix} ${p.instance_id||p.uid}${goldenTag} ${suffix}</option>`;
     });
   },
@@ -1577,13 +1518,9 @@ const UI = {
     // 1. Header
     html += '<div class="insp-header">';
     html += `<div class="fld"><div class="flbl">Instance ID</div><div class="fval">${p.instance_id||p.uid}</div></div>`;
-    if (!p._completionOnly) {
-      html += `<div class="fld"><div class="flbl">Repo</div><div class="fval">${p.repo||'-'}</div></div>`;
-      html += `<div class="fld"><div class="flbl">Reward</div><div class="fval"><span class="badge ${p.reward>0?'bg':'br'}" style="font-size:13px;">${p.reward}</span></div></div>`;
-      html += `<div class="fld"><div class="flbl">Termination</div><div class="fval"><span class="badge bb">${p.termination_reason}</span></div></div>`;
-    } else {
-      html += `<div class="fld"><div class="flbl">Source</div><div class="fval" style="color:var(--accent2);">completion-only</div></div>`;
-    }
+    html += `<div class="fld"><div class="flbl">Repo</div><div class="fval">${p.repo||'-'}</div></div>`;
+    html += `<div class="fld"><div class="flbl">Reward</div><div class="fval"><span class="badge ${p.reward>0?'bg':'br'}" style="font-size:13px;">${p.reward}</span></div></div>`;
+    html += `<div class="fld"><div class="flbl">Termination</div><div class="fval"><span class="badge bb">${p.termination_reason}</span></div></div>`;
     html += `<div class="fld"><div class="flbl">Steps</div><div class="fval">${p.numSteps}</div></div>`;
     html += `<div class="fld"><div class="flbl">Tokens (est)</div><div class="fval">${Math.round(p.tokens/4).toLocaleString()}</div></div>`;
     // Show golden patch info when highlight is active
@@ -1696,7 +1633,7 @@ const UI = {
       html += `<div class="step-row ${status} ${goldenClass}" data-step="${i}" onclick="UI.showStepDetail(${i})">`;
       html += `<span class="step-num">${i+1}</span>`;
       html += `<span class="step-tool-badge ${toolClass}">${this.CR_trunc(toolKey, 22)}</span>`;
-      if (fileShort) html += `<span class="step-file">${fileShort}</span>`;
+      html += `<span class="step-file">${fileShort}</span>`;
       html += `<span class="step-icons">${icons}</span>`;
       html += '</div>';
     });
@@ -1791,8 +1728,10 @@ const UI = {
     }
 
     // Think — collapsed by default
+    const thinkLabel = step.thinkMode === 'formatted' ? 'Think <span style="color:var(--accent);font-size:10px;text-transform:none;letter-spacing:0;">(formatted)</span>'
+                     : step.thinkMode === 'free' ? 'Think <span style="color:var(--orange);font-size:10px;text-transform:none;letter-spacing:0;">(free)</span>' : 'Think';
     html += '<div class="sd-section collapsed">';
-    html += '<div class="sd-section-title collapsed" onclick="UI.toggleSDSection(this)">Think</div>';
+    html += `<div class="sd-section-title collapsed" onclick="UI.toggleSDSection(this)">${thinkLabel}</div>`;
     html += `<div class="sd-section-body think-body">${this.esc(step.thought||'(empty)')}</div>`;
     html += '</div>';
 
@@ -2107,6 +2046,1020 @@ const UI = {
     svg+='</svg>';
     return svg;
   }
+};
+
+// ============================================================
+// DPO COLLECTION ANALYZER
+// ============================================================
+const DPO = {
+  state: {
+    pos: [],         // parsed pos trajectories
+    neg: [],         // parsed neg trajectories
+    byInstance: {},  // { instance_id: { pos: [...], neg: [...] } }
+    currentTraj: null,
+    selectedStepIndex: null,
+    view: 'dashboard', // 'dashboard' | 'inspector'
+  },
+
+  reset() {
+    this.state = { pos: [], neg: [], byInstance: {}, currentTraj: null, selectedStepIndex: null, view: 'dashboard' };
+  },
+
+  _syncGoldenBtn() {
+    UI.syncGoldenBtns();
+  },
+
+  // Reuse UI's golden match logic with shared golden patches state
+  _getGoldenMatch(step, instanceId) {
+    if (!UI.state.goldenPatches || !UI.state.goldenHighlight) return null;
+    const gd = UI.state.goldenPatches[instanceId];
+    if (!gd || !gd.callables || !gd.callables.length) return null;
+    return UI.getGoldenMatch(step, instanceId);
+  },
+
+  // Compute golden flags for an entire trajectory (requires steps to be loaded)
+  _getGoldenFlags(traj) {
+    const flags = { viewCallable: false, viewFile: false, editCallable: false, editFile: false };
+    if (!UI.state.goldenPatches || !UI.state.goldenHighlight || !traj.steps) return flags;
+    traj.steps.forEach(step => {
+      const gm = this._getGoldenMatch(step, traj.instance_id);
+      if (!gm) return;
+      if (gm.level === 'view-callable') flags.viewCallable = true;
+      else if (gm.level === 'view-file') flags.viewFile = true;
+      else if (gm.level === 'edit-callable') flags.editCallable = true;
+      else if (gm.level === 'edit-file') flags.editFile = true;
+    });
+    return flags;
+  },
+
+  async loadFromDirectory(fileList) {
+    const files = Array.from(fileList);
+    const posFiles = files.filter(f => f.name.endsWith('.pos.jsonl'));
+    const negFiles = files.filter(f => f.name.endsWith('.neg.jsonl'));
+    const status = document.getElementById('dpo-load-status');
+
+    if (!posFiles.length && !negFiles.length) {
+      status.textContent = 'Error: no *.pos.jsonl or *.neg.jsonl found.';
+      return;
+    }
+
+    status.textContent = 'Loading…';
+    this.reset();
+
+    // Collect all raw entries first (JSON parse only, no step extraction yet)
+    const rawEntries = [];
+    for (const f of posFiles) {
+      status.textContent = `Reading ${f.name}…`;
+      await new Promise(r => setTimeout(r, 0));
+      const entries = DataParser.parseJSONLText(await f.text());
+      entries.forEach(e => rawEntries.push({ entry: e, label: 'pos' }));
+    }
+    for (const f of negFiles) {
+      status.textContent = `Reading ${f.name}…`;
+      await new Promise(r => setTimeout(r, 0));
+      const entries = DataParser.parseJSONLText(await f.text());
+      entries.forEach(e => rawEntries.push({ entry: e, label: 'neg' }));
+    }
+
+    // Process entries in async chunks to avoid blocking UI
+    const CHUNK = 3;
+    for (let i = 0; i < rawEntries.length; i += CHUNK) {
+      const chunk = rawEntries.slice(i, i + CHUNK);
+      chunk.forEach(({ entry, label }) => {
+        const traj = this._toTrajectory(entry, label);
+        this.state[label].push(traj);
+      });
+      if (i % (CHUNK * 2) === 0) {
+        status.textContent = `Parsing trajectories… ${i}/${rawEntries.length}`;
+        await new Promise(r => setTimeout(r, 0)); // yield to UI
+      }
+    }
+
+    // Group by instance
+    const all = [...this.state.pos, ...this.state.neg];
+    all.forEach(t => {
+      if (!this.state.byInstance[t.instance_id]) this.state.byInstance[t.instance_id] = { pos: [], neg: [] };
+      this.state.byInstance[t.instance_id][t._dpoLabel].push(t);
+    });
+
+    status.textContent = `Loaded ${this.state.pos.length} pos + ${this.state.neg.length} neg trajectories (${Object.keys(this.state.byInstance).length} instances)`;
+    document.getElementById('dpo-empty').style.display = 'none';
+    document.getElementById('dpo-results').style.display = '';
+    this.renderDashboard();
+  },
+
+  _toTrajectory(entry, label) {
+    const msgs = entry.messages || [];
+    const repo = this._extractRepo(entry);
+    // Count messages and extract tool keys cheaply (no full step parsing)
+    // For editor tools, include the command sub-type (e.g. file_editor:str_replace)
+    let estSteps = 0;
+    const toolNames = [];
+    for (let i = 2; i < msgs.length; i += 2) {
+      if (msgs[i] && msgs[i].role === 'assistant') {
+        estSteps++;
+        const c = msgs[i].content || '';
+        const m = c.match(/<function=(\w+)>/);
+        if (m) {
+          let name = m[1];
+          // For editor tools, extract command parameter to get sub-type
+          if (name === 'file_editor' || name === 'str_replace_editor') {
+            const cm = c.match(/<parameter=command>(\w+)/);
+            if (cm) name += ':' + cm[1];
+          }
+          toolNames.push(name);
+        } else {
+          toolNames.push('unknown');
+        }
+      }
+    }
+    const rawId = entry.instance_id || entry.uid || 'unknown';
+    const instanceId = this._normalizeInstanceId(rawId);
+    return {
+      instance_id: instanceId,
+      uid: instanceId,
+      repo,
+      reward: label === 'pos' ? 1 : 0,
+      termination_reason: entry.termination_reason || 'UNKNOWN',
+      _rawMessages: msgs,    // keep raw, parse steps lazily
+      steps: null,           // null = not yet extracted
+      numSteps: estSteps,
+      _toolNames: toolNames, // lightweight tool list for dashboard charts
+      tokens: msgs.reduce((a, m) => a + (m.content||'').length, 0),
+      _dpoLabel: label,
+    };
+  },
+
+  // Lazily extract steps on first access
+  _ensureSteps(traj) {
+    if (traj.steps === null) {
+      traj.steps = DataParser.extractSteps(traj._rawMessages);
+      traj.numSteps = traj.steps.length;
+    }
+    return traj.steps;
+  },
+
+  _extractRepo(entry) {
+    // Reliably extract repo from instance_id (format: "repo__hash")
+    if (entry.instance_id && entry.instance_id.includes('__')) {
+      return entry.instance_id.split('__')[0];
+    }
+    return 'unknown';
+  },
+
+  // Normalize instance_id: truncate hash part to 8 chars for golden patch matching
+  _normalizeInstanceId(id) {
+    if (!id) return 'unknown';
+    const parts = id.split('__');
+    if (parts.length === 2 && parts[1].length > 8) {
+      return parts[0] + '__' + parts[1].substring(0, 8);
+    }
+    return id;
+  },
+
+  // ─── Macro Dashboard ─────────────────────────────
+
+  renderDashboard() {
+    this.state.view = 'dashboard';
+    const container = document.getElementById('dpo-dashboard');
+    const inspector = document.getElementById('dpo-inspector');
+    container.style.display = '';
+    inspector.style.display = 'none';
+
+    const { pos, neg, byInstance } = this.state;
+    const instances = Object.keys(byInstance);
+    const posOnly = instances.filter(id => byInstance[id].pos.length > 0 && byInstance[id].neg.length === 0);
+    const negOnly = instances.filter(id => byInstance[id].neg.length > 0 && byInstance[id].pos.length === 0);
+    const mixed = instances.filter(id => byInstance[id].pos.length > 0 && byInstance[id].neg.length > 0);
+
+    let h = '';
+
+    // Summary cards
+    h += '<div class="cards">';
+    h += this._card('Total Trajectories', pos.length + neg.length, `${pos.length} pos / ${neg.length} neg`);
+    h += this._card('Instances', instances.length, `${mixed.length} mixed / ${posOnly.length} pos-only / ${negOnly.length} neg-only`);
+    h += this._card('Pos Ratio', ((pos.length / (pos.length + neg.length)) * 100).toFixed(1) + '%', `${pos.length} of ${pos.length + neg.length}`);
+    h += this._card('Avg Steps (Pos)', pos.length ? (pos.reduce((a, t) => a + t.numSteps, 0) / pos.length).toFixed(1) : '-');
+    h += this._card('Avg Steps (Neg)', neg.length ? (neg.reduce((a, t) => a + t.numSteps, 0) / neg.length).toFixed(1) : '-');
+    const posFinish = pos.filter(t => t.termination_reason === 'ENV_DONE').length;
+    const negFinish = neg.filter(t => t.termination_reason === 'ENV_DONE').length;
+    h += this._card('Finish Rate (Pos)', pos.length ? (posFinish / pos.length * 100).toFixed(1) + '%' : '-');
+    h += this._card('Finish Rate (Neg)', neg.length ? (negFinish / neg.length * 100).toFixed(1) + '%' : '-');
+    h += '</div>';
+
+    // Charts row
+    h += '<div class="charts-grid">';
+
+    // Instance-level sample count distribution curve
+    h += '<div class="chart-box"><h3>Sample Count Distribution (per Instance)</h3><div id="dpo-chart-instance"></div></div>';
+
+    // Termination reasons comparison
+    h += '<div class="chart-box"><h3>Termination Reasons (Pos vs Neg)</h3><div id="dpo-chart-term"></div></div>';
+
+    // Step count distribution
+    h += '<div class="chart-box"><h3>Step Count Distribution</h3><div id="dpo-chart-steps"></div></div>';
+
+    // Tool usage comparison
+    h += '<div class="chart-box"><h3>Tool Usage (Pos vs Neg)</h3><div id="dpo-chart-tools"></div></div>';
+
+    h += '</div>';
+
+    // Golden patch localization panel (populated async after render)
+    h += '<div id="dpo-golden-stats" style="display:none;margin-top:16px;"></div>';
+
+    // Instance table
+    h += '<div style="margin-top:8px;">';
+    h += '<h3 style="margin-bottom:8px;">Per-Instance Breakdown</h3>';
+    h += '<div class="tbl-controls">';
+    h += '<input type="text" id="dpo-instance-filter" placeholder="Filter by instance_id…" style="width:240px;">';
+    h += '<label style="font-size:12px;color:var(--text-dim);"><input type="checkbox" id="dpo-mixed-only"> Mixed only</label>';
+    h += '</div>';
+    h += '<div class="tbl-wrap" style="max-height:500px;"><table>';
+    h += '<thead><tr><th>Instance ID</th><th>Repo</th><th style="text-align:center;">Pos</th><th style="text-align:center;">Neg</th><th style="text-align:center;">Ratio</th><th>Actions</th></tr></thead>';
+    h += '<tbody id="dpo-instance-tbody">';
+
+    const sorted = instances.slice().sort((a, b) => {
+      const ta = byInstance[a].pos.length + byInstance[a].neg.length;
+      const tb = byInstance[b].pos.length + byInstance[b].neg.length;
+      return tb - ta;
+    });
+
+    sorted.forEach(id => {
+      const d = byInstance[id];
+      const total = d.pos.length + d.neg.length;
+      const ratio = total ? (d.pos.length / total * 100).toFixed(0) + '%' : '-';
+      const repo = (d.pos[0] || d.neg[0])?.repo || '';
+      const isMixed = d.pos.length > 0 && d.neg.length > 0;
+      h += `<tr class="dpo-inst-row" data-id="${UI.esc(id)}" data-mixed="${isMixed}">`;
+      h += `<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${UI.esc(id)}">${UI.esc(id)}</td>`;
+      h += `<td>${UI.esc(repo)}</td>`;
+      h += `<td style="text-align:center;"><span class="badge bg">${d.pos.length}</span></td>`;
+      h += `<td style="text-align:center;"><span class="badge br">${d.neg.length}</span></td>`;
+      h += `<td style="text-align:center;">${ratio}</td>`;
+      h += `<td><button class="load-btn sec" style="font-size:11px;padding:3px 10px;" onclick="DPO.inspectInstance('${UI.esc(id)}')">Inspect</button></td>`;
+      h += '</tr>';
+    });
+
+    h += '</tbody></table></div>';
+    h += '</div>';
+
+    container.innerHTML = h;
+
+    // Render charts
+    this._renderInstanceChart();
+    this._renderTermChart();
+    this._renderStepsChart();
+    this._renderToolsChart();
+
+    // Render golden patch localization (async — needs step parsing)
+    this._renderGoldenStats();
+
+    // Wire filters
+    document.getElementById('dpo-instance-filter').addEventListener('input', () => this._filterInstanceTable());
+    document.getElementById('dpo-mixed-only').addEventListener('change', () => this._filterInstanceTable());
+  },
+
+  _card(label, value, sub) {
+    return `<div class="card"><div class="clabel">${label}</div><div class="cvalue">${value}</div>${sub ? `<div class="csub">${sub}</div>` : ''}</div>`;
+  },
+
+  _filterInstanceTable() {
+    const filter = (document.getElementById('dpo-instance-filter').value || '').toLowerCase();
+    const mixedOnly = document.getElementById('dpo-mixed-only').checked;
+    document.querySelectorAll('.dpo-inst-row').forEach(r => {
+      const id = r.dataset.id.toLowerCase();
+      const isMixed = r.dataset.mixed === 'true';
+      const show = id.includes(filter) && (!mixedOnly || isMixed);
+      r.style.display = show ? '' : 'none';
+    });
+  },
+
+  _filterInstanceSelector(q) {
+    const ql = q.toLowerCase();
+    const sel = document.getElementById('dpo-instance-selector');
+    if (!sel) return;
+    Array.from(sel.options).forEach(opt => {
+      if (!opt.value) return;
+      opt.hidden = ql && !opt.text.toLowerCase().includes(ql);
+    });
+  },
+
+  _renderInstanceChart() {
+    const el = document.getElementById('dpo-chart-instance');
+    if (!el) return;
+    const { byInstance } = this.state;
+    const instances = Object.keys(byInstance);
+
+    // Build two arrays: pos count and neg count per instance, sorted by total desc
+    const sorted = instances.slice().sort((a, b) =>
+      (byInstance[b].pos.length + byInstance[b].neg.length) - (byInstance[a].pos.length + byInstance[a].neg.length)
+    );
+
+    const posVals = sorted.map(id => byInstance[id].pos.length);
+    const negVals = sorted.map(id => byInstance[id].neg.length);
+    const n = sorted.length;
+    if (!n) { el.innerHTML = '<div style="color:var(--text-dim);padding:20px;font-size:12px;">No data</div>'; return; }
+
+    // Compute nice Y-axis max and tick interval
+    const rawMax = Math.max(...posVals.map((p, i) => p + negVals[i]), 1);
+    const niceMax = (v) => {
+      const mag = Math.pow(10, Math.floor(Math.log10(v)));
+      const frac = v / mag;
+      if (frac <= 1) return mag;
+      if (frac <= 2) return 2 * mag;
+      if (frac <= 5) return 5 * mag;
+      return 10 * mag;
+    };
+    const maxVal = niceMax(rawMax);
+    const tickCount = maxVal <= 5 ? maxVal : 4;
+
+    const w = 440, h = 220;
+    const mg = { top: 20, right: 15, bottom: 35, left: 45 };
+    const cw = w - mg.left - mg.right, ch = h - mg.top - mg.bottom;
+
+    let svg = `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">`;
+    // Y-axis grid with nice ticks
+    for (let g = 1; g <= tickCount; g++) {
+      const val = maxVal * g / tickCount;
+      const gy = mg.top + ch - (val / maxVal) * ch;
+      svg += `<line x1="${mg.left}" y1="${gy}" x2="${mg.left+cw}" y2="${gy}" class="chart-grid"/>`;
+      svg += `<text x="${mg.left-4}" y="${gy+4}" text-anchor="end" class="chart-label" style="font-size:9px;">${val % 1 === 0 ? val : val.toFixed(1)}</text>`;
+    }
+    svg += `<line x1="${mg.left}" y1="${mg.top+ch}" x2="${mg.left+cw}" y2="${mg.top+ch}" class="chart-axis"/>`;
+    svg += `<text x="${mg.left-4}" y="${mg.top+ch+4}" text-anchor="end" class="chart-label" style="font-size:9px;">0</text>`;
+
+    // Build area + line paths for pos and neg (stacked: neg on top of pos)
+    const xOf = i => mg.left + (i / Math.max(n - 1, 1)) * cw;
+    const yOf = v => mg.top + ch - (v / maxVal) * ch;
+
+    // Neg area (stacked on pos)
+    let negAreaD = `M${xOf(0)},${yOf(posVals[0] + negVals[0])}`;
+    for (let i = 1; i < n; i++) negAreaD += ` L${xOf(i)},${yOf(posVals[i] + negVals[i])}`;
+    negAreaD += ` L${xOf(n-1)},${yOf(posVals[n-1])}`;
+    for (let i = n - 1; i >= 0; i--) negAreaD += ` L${xOf(i)},${yOf(posVals[i])}`;
+    negAreaD += ' Z';
+    svg += `<path d="${negAreaD}" fill="#f87171" opacity="0.35"/>`;
+
+    // Pos area
+    let posAreaD = `M${xOf(0)},${yOf(posVals[0])}`;
+    for (let i = 1; i < n; i++) posAreaD += ` L${xOf(i)},${yOf(posVals[i])}`;
+    posAreaD += ` L${xOf(n-1)},${mg.top+ch} L${xOf(0)},${mg.top+ch} Z`;
+    svg += `<path d="${posAreaD}" fill="#4ade80" opacity="0.35"/>`;
+
+    // Lines
+    let negLineD = `M${xOf(0)},${yOf(posVals[0] + negVals[0])}`;
+    for (let i = 1; i < n; i++) negLineD += ` L${xOf(i)},${yOf(posVals[i] + negVals[i])}`;
+    svg += `<path d="${negLineD}" fill="none" stroke="#f87171" stroke-width="1.5"/>`;
+
+    let posLineD = `M${xOf(0)},${yOf(posVals[0])}`;
+    for (let i = 1; i < n; i++) posLineD += ` L${xOf(i)},${yOf(posVals[i])}`;
+    svg += `<path d="${posLineD}" fill="none" stroke="#4ade80" stroke-width="1.5"/>`;
+
+    // X-axis label
+    svg += `<text x="${mg.left+cw/2}" y="${h-4}" text-anchor="middle" class="chart-label" style="font-size:10px;">Instances (sorted by total samples ↓)  n=${n}</text>`;
+    // X-axis ticks
+    [0, 0.25, 0.5, 0.75, 1].forEach(f => {
+      const idx = Math.min(Math.round(f * (n - 1)), n - 1);
+      svg += `<text x="${xOf(idx)}" y="${mg.top+ch+14}" text-anchor="middle" class="chart-label" style="font-size:9px;">#${idx + 1}</text>`;
+    });
+
+    // Legend
+    svg += `<rect x="${mg.left}" y="2" width="8" height="8" fill="#4ade80" rx="1"/>`;
+    svg += `<text x="${mg.left+12}" y="10" class="chart-label" style="font-size:10px;">Positive</text>`;
+    svg += `<rect x="${mg.left+80}" y="2" width="8" height="8" fill="#f87171" rx="1"/>`;
+    svg += `<text x="${mg.left+92}" y="10" class="chart-label" style="font-size:10px;">Negative (stacked)</text>`;
+    svg += '</svg>';
+    el.innerHTML = svg;
+  },
+
+  _renderTermChart() {
+    const el = document.getElementById('dpo-chart-term');
+    if (!el) return;
+    const { pos, neg } = this.state;
+    const termPos = {}, termNeg = {};
+    pos.forEach(t => { termPos[t.termination_reason] = (termPos[t.termination_reason] || 0) + 1; });
+    neg.forEach(t => { termNeg[t.termination_reason] = (termNeg[t.termination_reason] || 0) + 1; });
+    const allReasons = [...new Set([...Object.keys(termPos), ...Object.keys(termNeg)])].sort();
+    const data = allReasons.map(r => ({ label: r, valueA: termPos[r] || 0, valueB: termNeg[r] || 0 }));
+    el.innerHTML = UI.compBarChart(data, 'Pos', 'Neg', { width: 440, height: 220 });
+  },
+
+  _renderStepsChart() {
+    const el = document.getElementById('dpo-chart-steps');
+    if (!el) return;
+    const { pos, neg } = this.state;
+    el.innerHTML = CR.histogram(
+      pos.map(t => t.numSteps),
+      neg.map(t => t.numSteps),
+      { labelA: 'Pos', labelB: 'Neg', colorA: '#4ade80', colorB: '#f87171', bins: 15 }
+    );
+  },
+
+  _renderToolsChart() {
+    const el = document.getElementById('dpo-chart-tools');
+    if (!el) return;
+    const { pos, neg } = this.state;
+    const toolPos = {}, toolNeg = {};
+    pos.forEach(t => t._toolNames.forEach(n => { toolPos[n] = (toolPos[n] || 0) + 1; }));
+    neg.forEach(t => t._toolNames.forEach(n => { toolNeg[n] = (toolNeg[n] || 0) + 1; }));
+
+    // Only keep tools with >= 0.5% of total calls, aggregate rest as "other"
+    const allTools = [...new Set([...Object.keys(toolPos), ...Object.keys(toolNeg)])];
+    const totalCalls = allTools.reduce((a, t) => a + (toolPos[t] || 0) + (toolNeg[t] || 0), 0);
+    const threshold = totalCalls * 0.005;
+    let otherPos = 0, otherNeg = 0;
+    const kept = [];
+    allTools.forEach(t => {
+      const sum = (toolPos[t] || 0) + (toolNeg[t] || 0);
+      if (sum >= threshold) kept.push(t);
+      else { otherPos += (toolPos[t] || 0); otherNeg += (toolNeg[t] || 0); }
+    });
+    kept.sort((a, b) => ((toolPos[b]||0) + (toolNeg[b]||0)) - ((toolPos[a]||0) + (toolNeg[a]||0)));
+    if (otherPos + otherNeg > 0) kept.push('other');
+
+    const data = kept.map(t => ({
+      label: t,
+      valueA: t === 'other' ? otherPos : (toolPos[t] || 0),
+      valueB: t === 'other' ? otherNeg : (toolNeg[t] || 0),
+    }));
+
+    // Render horizontal grouped bar chart for readability
+    const w = 440, h = Math.max(120, data.length * 40 + 30);
+    const mg = { top: 20, right: 15, bottom: 10, left: 130 };
+    const cw = w - mg.left - mg.right, ch = h - mg.top - mg.bottom;
+    const maxVal = Math.max(...data.flatMap(d => [d.valueA, d.valueB]), 1);
+    const rowH = ch / data.length;
+    const barH = Math.min(12, rowH * 0.4);
+
+    let svg = `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">`;
+    data.forEach((d, i) => {
+      const y = mg.top + i * rowH;
+      const bwA = (d.valueA / maxVal) * cw;
+      const bwB = (d.valueB / maxVal) * cw;
+      svg += `<text x="${mg.left-6}" y="${y+rowH/2+4}" text-anchor="end" class="chart-label" style="font-size:10px;">${d.label}</text>`;
+      svg += `<rect x="${mg.left}" y="${y+rowH/2-barH-1}" width="${bwA}" height="${barH}" fill="#4ade80" opacity="0.8" rx="2"><title>Pos: ${d.valueA}</title></rect>`;
+      svg += `<rect x="${mg.left}" y="${y+rowH/2+1}" width="${bwB}" height="${barH}" fill="#f87171" opacity="0.8" rx="2"><title>Neg: ${d.valueB}</title></rect>`;
+      svg += `<text x="${mg.left+bwA+4}" y="${y+rowH/2-barH+barH/2+3}" class="chart-value" style="font-size:8px;">${d.valueA}</text>`;
+      svg += `<text x="${mg.left+bwB+4}" y="${y+rowH/2+barH/2+4}" class="chart-value" style="font-size:8px;">${d.valueB}</text>`;
+    });
+    // Legend
+    svg += `<rect x="${mg.left}" y="2" width="8" height="8" fill="#4ade80" opacity="0.8" rx="1"/>`;
+    svg += `<text x="${mg.left+12}" y="10" class="chart-label" style="font-size:10px;">Pos</text>`;
+    svg += `<rect x="${mg.left+50}" y="2" width="8" height="8" fill="#f87171" opacity="0.8" rx="1"/>`;
+    svg += `<text x="${mg.left+62}" y="10" class="chart-label" style="font-size:10px;">Neg</text>`;
+    svg += '</svg>';
+    el.innerHTML = svg;
+  },
+
+  // ─── Golden Patch Localization Stats ──────────────
+
+  async _renderGoldenStats() {
+    const panel = document.getElementById('dpo-golden-stats');
+    if (!panel) return;
+    if (!UI.state.goldenPatches || !UI.state.goldenHighlight) {
+      panel.style.display = 'none';
+      return;
+    }
+
+    const { pos, neg, byInstance } = this.state;
+    const goldenPatches = UI.state.goldenPatches;
+    const all = [...pos, ...neg];
+
+    // Filter to trajectories that have a golden patch entry
+    const withGolden = all.filter(t => goldenPatches[t.instance_id]);
+    if (!withGolden.length) {
+      panel.style.display = '';
+      panel.innerHTML = '<div class="loc-stats"><p style="color:var(--text-dim);font-size:12px;">No trajectories match instances in golden_patches.json.</p></div>';
+      return;
+    }
+
+    panel.style.display = '';
+    panel.innerHTML = '<div class="loc-stats"><p style="color:var(--text-dim);font-size:12px;">Analyzing golden patch localization… (parsing steps)</p></div>';
+    await new Promise(r => setTimeout(r, 0));
+
+    // Parse steps for golden-matched trajectories (lazy, only those not yet parsed)
+    const CHUNK = 5;
+    for (let i = 0; i < withGolden.length; i += CHUNK) {
+      withGolden.slice(i, i + CHUNK).forEach(t => this._ensureSteps(t));
+      if (i % 20 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+
+    const noCallablePatch = withGolden.filter(t => goldenPatches[t.instance_id].callables.length === 0);
+    const withCallables   = withGolden.filter(t => goldenPatches[t.instance_id].callables.length > 0);
+    const total = withCallables.length;
+
+    // Split pos/neg within callable-patch trajectories
+    const wcPos = withCallables.filter(t => t._dpoLabel === 'pos');
+    const wcNeg = withCallables.filter(t => t._dpoLabel === 'neg');
+
+    // Compute located flags
+    const isLocated = t => {
+      const flags = this._getGoldenFlags(t);
+      return flags.viewCallable || flags.editCallable;
+    };
+
+    const locatedPos = wcPos.filter(isLocated);
+    const locatedNeg = wcNeg.filter(isLocated);
+    const notLocatedPos = wcPos.filter(t => !isLocated(t));
+    const notLocatedNeg = wcNeg.filter(t => !isLocated(t));
+
+    // Breakdown by match type
+    const levelCountsPos = { 'view-callable': 0, 'edit-callable': 0, both: 0 };
+    const levelCountsNeg = { 'view-callable': 0, 'edit-callable': 0, both: 0 };
+    const countLevels = (trajs, counts) => {
+      trajs.forEach(t => {
+        const f = this._getGoldenFlags(t);
+        if (f.viewCallable && f.editCallable) counts.both++;
+        else if (f.viewCallable) counts['view-callable']++;
+        else if (f.editCallable) counts['edit-callable']++;
+      });
+    };
+    countLevels(locatedPos, levelCountsPos);
+    countLevels(locatedNeg, levelCountsNeg);
+
+    // File-level interactions (view-file / edit-file without callable match)
+    const fileLevelPos = wcPos.filter(t => {
+      const f = this._getGoldenFlags(t);
+      return !f.viewCallable && !f.editCallable && (f.viewFile || f.editFile);
+    });
+    const fileLevelNeg = wcNeg.filter(t => {
+      const f = this._getGoldenFlags(t);
+      return !f.viewCallable && !f.editCallable && (f.viewFile || f.editFile);
+    });
+
+    const pct = (n, d) => d ? (n/d*100).toFixed(1)+'%' : '-';
+    const locPosW = wcPos.length ? Math.round(locatedPos.length / wcPos.length * 100) : 0;
+    const locNegW = wcNeg.length ? Math.round(locatedNeg.length / wcNeg.length * 100) : 0;
+
+    let h = '<div class="loc-stats">';
+    h += '<h3>📍 Fault Localization Analysis (Pos vs Neg)</h3>';
+
+    // Two progress bars side by side
+    h += '<div style="display:flex;gap:20px;margin-bottom:12px;">';
+    h += '<div style="flex:1;">';
+    h += `<div style="font-size:11px;color:var(--green);margin-bottom:4px;">Pos located: ${locatedPos.length}/${wcPos.length} (${pct(locatedPos.length, wcPos.length)})</div>`;
+    h += `<div class="loc-bar"><div style="flex:${locPosW};background:var(--green);"></div><div style="flex:${100-locPosW};background:var(--surface2);"></div></div>`;
+    h += '</div>';
+    h += '<div style="flex:1;">';
+    h += `<div style="font-size:11px;color:var(--red);margin-bottom:4px;">Neg located: ${locatedNeg.length}/${wcNeg.length} (${pct(locatedNeg.length, wcNeg.length)})</div>`;
+    h += `<div class="loc-bar"><div style="flex:${locNegW};background:var(--red);"></div><div style="flex:${100-locNegW};background:var(--surface2);"></div></div>`;
+    h += '</div>';
+    h += '</div>';
+
+    // Main comparison table
+    h += '<table class="loc-table"><thead><tr>';
+    h += '<th>Category</th><th class="num">Pos</th><th class="pct">%</th><th class="num">Neg</th><th class="pct">%</th>';
+    h += '</tr></thead><tbody>';
+
+    h += `<tr><td>🎯 Located (found golden callable)</td><td class="num" style="color:var(--green);">${locatedPos.length}</td><td class="pct">${pct(locatedPos.length, wcPos.length)}</td><td class="num" style="color:var(--red);">${locatedNeg.length}</td><td class="pct">${pct(locatedNeg.length, wcNeg.length)}</td></tr>`;
+    h += `<tr class="sub"><td>↳ Viewed + Edited callable</td><td class="num">${levelCountsPos.both}</td><td class="pct">${pct(levelCountsPos.both, wcPos.length)}</td><td class="num">${levelCountsNeg.both}</td><td class="pct">${pct(levelCountsNeg.both, wcNeg.length)}</td></tr>`;
+    h += `<tr class="sub"><td>↳ Only viewed callable</td><td class="num">${levelCountsPos['view-callable']}</td><td class="pct">${pct(levelCountsPos['view-callable'], wcPos.length)}</td><td class="num">${levelCountsNeg['view-callable']}</td><td class="pct">${pct(levelCountsNeg['view-callable'], wcNeg.length)}</td></tr>`;
+    h += `<tr class="sub"><td>↳ Only edited callable</td><td class="num">${levelCountsPos['edit-callable']}</td><td class="pct">${pct(levelCountsPos['edit-callable'], wcPos.length)}</td><td class="num">${levelCountsNeg['edit-callable']}</td><td class="pct">${pct(levelCountsNeg['edit-callable'], wcNeg.length)}</td></tr>`;
+
+    h += `<tr><td>🔍📁 File-level only (no callable match)</td><td class="num">${fileLevelPos.length}</td><td class="pct">${pct(fileLevelPos.length, wcPos.length)}</td><td class="num">${fileLevelNeg.length}</td><td class="pct">${pct(fileLevelNeg.length, wcNeg.length)}</td></tr>`;
+
+    h += `<tr><td>❌ Not Located</td><td class="num">${notLocatedPos.length}</td><td class="pct">${pct(notLocatedPos.length, wcPos.length)}</td><td class="num">${notLocatedNeg.length}</td><td class="pct">${pct(notLocatedNeg.length, wcNeg.length)}</td></tr>`;
+
+    h += `<tr class="total"><td>Callable-patch total</td><td class="num">${wcPos.length}</td><td class="pct">100%</td><td class="num">${wcNeg.length}</td><td class="pct">100%</td></tr>`;
+
+    if (noCallablePatch.length) {
+      const ncPos = noCallablePatch.filter(t => t._dpoLabel === 'pos').length;
+      const ncNeg = noCallablePatch.filter(t => t._dpoLabel === 'neg').length;
+      h += `<tr><td style="color:var(--text-dim);">📄 No-callable patch (excluded)</td><td class="num" style="color:var(--text-dim);">${ncPos}</td><td class="pct"></td><td class="num" style="color:var(--text-dim);">${ncNeg}</td><td class="pct"></td></tr>`;
+    }
+
+    const notInGolden = all.length - withGolden.length;
+    if (notInGolden > 0) {
+      h += `<tr class="sub"><td style="color:var(--text-dim);">⚠ ${notInGolden} trajectories not in golden_patches.json (excluded)</td><td></td><td></td><td></td><td></td></tr>`;
+    }
+    h += '</tbody></table>';
+
+    // Localization-success correlation chart
+    h += '<div style="margin-top:12px;">';
+    h += '<h4 style="font-size:12px;margin-bottom:8px;">Localization vs Outcome</h4>';
+    h += '<div class="charts-grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,420px));">';
+
+    // Pos: located vs not located
+    h += '<div class="chart-box"><h3 style="color:var(--green);">Positive Trajectories</h3>';
+    h += CR.donutChart([
+      { label: 'Located', value: locatedPos.length, color: '#22d3ee' },
+      { label: 'File-only', value: fileLevelPos.length, color: '#6c8cff' },
+      { label: 'Not located', value: notLocatedPos.length - fileLevelPos.length, color: '#8b90a5' },
+    ].filter(d => d.value > 0), { width: 280, height: 180 });
+    h += '</div>';
+
+    // Neg: located vs not located
+    h += '<div class="chart-box"><h3 style="color:var(--red);">Negative Trajectories</h3>';
+    h += CR.donutChart([
+      { label: 'Located', value: locatedNeg.length, color: '#22d3ee' },
+      { label: 'File-only', value: fileLevelNeg.length, color: '#6c8cff' },
+      { label: 'Not located', value: notLocatedNeg.length - fileLevelNeg.length, color: '#8b90a5' },
+    ].filter(d => d.value > 0), { width: 280, height: 180 });
+    h += '</div>';
+
+    h += '</div></div>';
+
+    h += '<div style="margin-top:8px;font-size:11px;color:var(--text-dim);">🎯 Located = agent viewed/edited the exact golden callable. 🔍📁 File-only = touched the right file but not the exact callable. 📄 No-callable = patch changes non-callable code.</div>';
+    h += '</div>';
+
+    panel.innerHTML = h;
+  },
+
+  // ─── Micro Inspector ──────────────────────────────
+
+  inspectInstance(instanceId) {
+    const d = this.state.byInstance[instanceId];
+    if (!d) return;
+    this.state.view = 'inspector';
+    this.state.currentTraj = null;
+    this.state.selectedStepIndex = null;
+    this.state._currentInstanceId = instanceId;
+
+    const container = document.getElementById('dpo-inspector');
+    const dashboard = document.getElementById('dpo-dashboard');
+    dashboard.style.display = 'none';
+    container.style.display = '';
+
+    let h = '';
+
+    // Back button + instance selector dropdown + header
+    h += '<div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">';
+    h += '<button class="load-btn sec" onclick="DPO.renderDashboard()" style="font-size:12px;">← Back to Dashboard</button>';
+    // Instance selector dropdown
+    const allInstances = Object.keys(this.state.byInstance).sort();
+    h += '<select id="dpo-instance-selector" style="min-width:280px;" onchange="if(this.value)DPO.inspectInstance(this.value)">';
+    allInstances.forEach(id => {
+      const sel = id === instanceId ? ' selected' : '';
+      const di = this.state.byInstance[id];
+      h += `<option value="${UI.esc(id)}"${sel}>${UI.esc(id)} (${di.pos.length}+/${di.neg.length}−)</option>`;
+    });
+    h += '</select>';
+    h += '<input type="text" id="dpo-instance-search" placeholder="Filter instances…" style="width:180px;" oninput="DPO._filterInstanceSelector(this.value)">';
+    h += `<span style="color:var(--text-dim);font-size:12px;">${d.pos.length} pos / ${d.neg.length} neg trajectories</span>`;
+    // Golden patch summary for this instance
+    if (UI.state.goldenHighlight && UI.state.goldenPatches) {
+      const gd = UI.state.goldenPatches[instanceId];
+      if (gd) {
+        const nc = gd.callables.length, nf = gd.files.length;
+        if (nc === 0) {
+          h += `<span style="font-size:12px;color:var(--yellow);">📄 file-only patch (${nf} file${nf!==1?'s':''})</span>`;
+        } else {
+          h += `<span style="font-size:12px;color:var(--orange);">✨ ${nc} golden callable${nc!==1?'s':''} in ${nf} file${nf!==1?'s':''}</span>`;
+        }
+      }
+    }
+    h += '</div>';
+
+    // Instance-level comparison summary
+    const posSteps = d.pos.length ? (d.pos.reduce((a, t) => a + t.numSteps, 0) / d.pos.length).toFixed(1) : '-';
+    const negSteps = d.neg.length ? (d.neg.reduce((a, t) => a + t.numSteps, 0) / d.neg.length).toFixed(1) : '-';
+    h += '<div class="cards" style="margin-bottom:16px;">';
+    h += this._card('Pos Trajectories', d.pos.length, `avg steps: ${posSteps}`);
+    h += this._card('Neg Trajectories', d.neg.length, `avg steps: ${negSteps}`);
+    const posTerms = {};
+    d.pos.forEach(t => { posTerms[t.termination_reason] = (posTerms[t.termination_reason] || 0) + 1; });
+    const negTerms = {};
+    d.neg.forEach(t => { negTerms[t.termination_reason] = (negTerms[t.termination_reason] || 0) + 1; });
+    h += this._card('Pos Terminations', Object.entries(posTerms).map(([k, v]) => `${k}:${v}`).join(', ') || '-');
+    h += this._card('Neg Terminations', Object.entries(negTerms).map(([k, v]) => `${k}:${v}`).join(', ') || '-');
+    h += '</div>';
+
+    // Trajectory selector
+    h += '<div style="display:flex;gap:16px;flex-wrap:wrap;">';
+
+    // Pos list
+    h += '<div style="flex:1;min-width:300px;">';
+    h += '<h4 style="color:var(--green);margin-bottom:8px;">Positive Trajectories</h4>';
+    d.pos.forEach((t, i) => {
+      h += this._trajCard(t, 'pos', i);
+    });
+    if (!d.pos.length) h += '<div style="color:var(--text-dim);padding:12px;">No positive trajectories</div>';
+    h += '</div>';
+
+    // Neg list
+    h += '<div style="flex:1;min-width:300px;">';
+    h += '<h4 style="color:var(--red);margin-bottom:8px;">Negative Trajectories</h4>';
+    d.neg.forEach((t, i) => {
+      h += this._trajCard(t, 'neg', i);
+    });
+    if (!d.neg.length) h += '<div style="color:var(--text-dim);padding:12px;">No negative trajectories</div>';
+    h += '</div>';
+
+    h += '</div>';
+
+    // Trajectory detail area
+    h += '<div id="dpo-traj-detail" style="margin-top:16px;"></div>';
+
+    container.innerHTML = h;
+  },
+
+  _trajCard(traj, label, idx) {
+    // Ensure steps are loaded for golden patch analysis & mini strip
+    this._ensureSteps(traj);
+
+    const color = label === 'pos' ? 'var(--green)' : 'var(--red)';
+    const borderColor = label === 'pos' ? 'rgba(74,222,128,.3)' : 'rgba(248,113,113,.3)';
+    let h = `<div class="dpo-traj-card" style="background:var(--surface);border:1px solid ${borderColor};border-radius:var(--radius);padding:10px 14px;margin-bottom:8px;cursor:pointer;" onclick="DPO.showTrajectory('${label}',${idx})" onmouseover="this.style.borderColor='${color}'" onmouseout="this.style.borderColor='${borderColor}'">`;
+    h += `<div style="display:flex;justify-content:space-between;align-items:center;">`;
+    h += `<span style="font-size:12px;font-weight:600;color:${color};">${label.toUpperCase()} #${idx + 1}</span>`;
+    // Golden patch tags
+    if (UI.state.goldenHighlight && UI.state.goldenPatches) {
+      const flags = this._getGoldenFlags(traj);
+      let tags = '';
+      if (flags.viewCallable) tags += '🎯';
+      if (flags.editCallable) tags += '✏️';
+      if (flags.viewFile && !flags.viewCallable) tags += '🔍';
+      if (flags.editFile && !flags.editCallable) tags += '📁';
+      if (tags) h += `<span style="font-size:12px;margin:0 4px;">${tags}</span>`;
+    }
+    h += `<span class="badge bb" style="font-size:10px;">${traj.termination_reason}</span>`;
+    h += '</div>';
+    h += `<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">${traj.numSteps} steps · ~${Math.round(traj.tokens / 4).toLocaleString()} tokens</div>`;
+
+    // Mini action strip with golden highlighting
+    h += '<div style="display:flex;gap:1px;margin-top:6px;">';
+    traj.steps.forEach(s => {
+      const c = UI.TOOL_COLORS[s.toolName] || '#8b90a5';
+      const gm = this._getGoldenMatch(s, traj.instance_id);
+      let border = s.hasError ? '1px solid var(--red)' : '1px solid transparent';
+      // Golden highlight: use bottom border color from gm level
+      let outline = '';
+      if (gm) {
+        const gmColors = { 'view-callable': '#22d3ee', 'edit-callable': '#fb923c', 'view-file': '#6c8cff', 'edit-file': '#fbbf24' };
+        outline = `box-shadow:0 2px 0 ${gmColors[gm.level] || '#22d3ee'};`;
+      }
+      h += `<div style="width:6px;height:8px;background:${c};border:${border};border-radius:1px;${outline}" title="${s.toolName}${gm ? ' ['+gm.level+']' : ''}"></div>`;
+    });
+    h += '</div>';
+    h += '</div>';
+    return h;
+  },
+
+  showTrajectory(label, idx) {
+    if (!this.state._currentInstanceId) return;
+    const d = this.state.byInstance[this.state._currentInstanceId];
+    if (!d) return;
+    const traj = d[label][idx];
+    if (!traj) return;
+
+    this._ensureSteps(traj);
+    this.state.currentTraj = traj;
+    this.state.selectedStepIndex = null;
+
+    const micro = MicroAnalyzer.analyze(traj);
+    const repeatMap = {};
+    micro.repeats.forEach(r => {
+      for (let i = r.startIndex; i < r.startIndex + r.count; i++) repeatMap[i] = r.count;
+    });
+    const loopSteps = new Set();
+    micro.loops.forEach(l => {
+      for (let i = l.startIndex; i < l.startIndex + l.windowSize * l.reps; i++) loopSteps.add(i);
+    });
+
+    this.state._micro = micro;
+    this.state._repeatMap = repeatMap;
+    this.state._loopSteps = loopSteps;
+
+    const container = document.getElementById('dpo-traj-detail');
+    const color = label === 'pos' ? 'var(--green)' : 'var(--red)';
+
+    let h = '<div class="insp-wrap">';
+
+    // Header
+    h += '<div class="insp-header">';
+    h += `<div class="fld"><div class="flbl">Label</div><div class="fval" style="color:${color};font-weight:700;">${label.toUpperCase()}</div></div>`;
+    h += `<div class="fld"><div class="flbl">Instance</div><div class="fval">${traj.instance_id}</div></div>`;
+    h += `<div class="fld"><div class="flbl">Termination</div><div class="fval"><span class="badge bb">${traj.termination_reason}</span></div></div>`;
+    h += `<div class="fld"><div class="flbl">Steps</div><div class="fval">${traj.numSteps}</div></div>`;
+    h += `<div class="fld"><div class="flbl">Tokens (est)</div><div class="fval">${Math.round(traj.tokens / 4).toLocaleString()}</div></div>`;
+    // Golden patch info
+    if (UI.state.goldenHighlight && UI.state.goldenPatches) {
+      const gd = UI.state.goldenPatches[traj.instance_id];
+      if (gd) {
+        const nc = gd.callables.length, nf = gd.files.length;
+        if (nc === 0) {
+          h += `<div class="fld"><div class="flbl">Golden Patch</div><div class="fval" style="color:var(--yellow);">📄 file-only (${nf} file${nf!==1?'s':''})</div></div>`;
+          h += `<div class="fld"><div class="flbl">Located</div><div class="fval" style="color:var(--text-dim);">📄 no-callable</div></div>`;
+        } else {
+          const flags = this._getGoldenFlags(traj);
+          let tags = '';
+          if (flags.viewCallable) tags += '🎯';
+          if (flags.editCallable) tags += '✏️';
+          if (flags.viewFile && !flags.viewCallable) tags += '🔍';
+          if (flags.editFile && !flags.editCallable) tags += '📁';
+          const isLocated = flags.viewCallable || flags.editCallable;
+          h += `<div class="fld"><div class="flbl">Golden Patch</div><div class="fval" style="color:var(--orange);">✨ ${nc} callable${nc!==1?'s':''} in ${nf} file${nf!==1?'s':''}</div></div>`;
+          h += `<div class="fld"><div class="flbl">Located</div><div class="fval" style="color:${isLocated?'var(--cyan)':'var(--text-dim)'};">${tags||'—'}</div></div>`;
+        }
+      } else {
+        h += `<div class="fld"><div class="flbl">Golden Patch</div><div class="fval" style="color:var(--text-dim);">not in dataset</div></div>`;
+      }
+    }
+    h += '</div>';
+
+    // Summary panels
+    h += '<div class="insp-summary">';
+
+    // Action strip
+    h += '<div class="sum-panel"><h4>Action Sequence</h4><div class="action-strip" id="dpo-action-strip">';
+    traj.steps.forEach((s, i) => {
+      const c = UI.TOOL_COLORS[s.toolName] || '#8b90a5';
+      const border = s.hasError ? '2px solid var(--red)' : '2px solid transparent';
+      const gm = this._getGoldenMatch(s, traj.instance_id);
+      const gmCls = gm ? `gm-${gm.level}` : '';
+      const gmTitle = gm ? ` [${gm.level}]` : '';
+      h += `<div class="action-block ${gmCls}" style="background:${c};border:${border};" title="Step ${i + 1}: ${s.toolName}${gmTitle}" data-step="${i}" onclick="DPO.showStepDetail(${i})"></div>`;
+    });
+    h += '</div></div>';
+
+    // Tool usage
+    h += '<div class="sum-panel"><h4>Tool Usage</h4>';
+    h += CR.barChart(Object.entries(micro.toolBreakdown).sort((a, b) => b[1] - a[1]).map(([label, value]) => ({ label, value })), { width: 220, height: 130, horizontal: true });
+    h += '</div>';
+
+    // Error timeline
+    h += '<div class="sum-panel"><h4>Error Timeline</h4>';
+    h += CR.sparkline(micro.errorTimeline, { width: 160, height: 28, color: '#f87171' });
+    h += `<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">${micro.errorTimeline.filter(e => e).length} errors / ${traj.numSteps} steps</div>`;
+    h += '</div>';
+
+    // Patterns
+    h += '<div class="sum-panel"><h4>Patterns</h4><div class="pattern-tags">';
+    if (!micro.repeats.length && !micro.loops.length && !micro.errorSpirals.length) {
+      h += '<span style="font-size:11px;color:var(--text-dim);">None detected</span>';
+    }
+    micro.repeats.forEach(r => {
+      h += `<div class="badge by" style="cursor:pointer;margin:2px;" onclick="DPO.showStepDetail(${r.startIndex})">Repeat: ${r.toolName} ×${r.count} @${r.startIndex + 1}</div>`;
+    });
+    micro.loops.forEach(l => {
+      h += `<div class="badge by" style="cursor:pointer;margin:2px;" onclick="DPO.showStepDetail(${l.startIndex})">Loop: [${l.pattern.join('→')}] ×${l.reps} @${l.startIndex + 1}</div>`;
+    });
+    micro.errorSpirals.forEach(s => {
+      h += `<div class="badge br" style="cursor:pointer;margin:2px;" onclick="DPO.showStepDetail(${s.start})">Error spiral: ${s.length} steps @${s.start + 1}</div>`;
+    });
+    h += '</div></div>';
+
+    h += '</div>'; // insp-summary
+
+    // Body: step list + detail panel
+    h += '<div class="insp-body">';
+    h += '<div class="step-list">';
+    traj.steps.forEach((step, i) => {
+      const status = step.hasError ? 's-error' : step.isTruncated ? 's-warning' : 's-success';
+      const toolKey = step.toolName + (step.parameters.command ? ':' + step.parameters.command : '');
+      const toolClass = `tc-${step.toolName in UI.TOOL_COLORS ? step.toolName : 'unknown'}`;
+      const filePath = step.parameters.path || step.parameters.file || '';
+      const fileShort = filePath ? filePath.split('/').slice(-1)[0] : '';
+
+      const gm = this._getGoldenMatch(step, traj.instance_id);
+      const goldenClass = gm ? `gm-${gm.level}` : '';
+      const gmIcon = gm
+        ? (gm.level === 'view-callable' ? '🎯'
+          : gm.level === 'edit-callable' ? '✏️'
+          : gm.level === 'view-file'     ? '🔍'
+          :                                '📁')
+        : '';
+
+      let icons = '';
+      if (gmIcon) icons += gmIcon;
+      if (step.hasError) icons += '❌';
+      else if (step.isTruncated) icons += '⚠️';
+      else icons += '✅';
+      if (repeatMap[i]) icons += '🔁';
+      if (loopSteps.has(i)) icons += '🔄';
+      if (!step.thought) icons += '💭';
+
+      h += `<div class="step-row ${status} ${goldenClass}" data-step="${i}" onclick="DPO.showStepDetail(${i})">`;
+      h += `<span class="step-num">${i + 1}</span>`;
+      h += `<span class="step-tool-badge ${toolClass}">${UI.CR_trunc(toolKey, 22)}</span>`;
+      h += `<span class="step-file">${fileShort}</span>`;
+      h += `<span class="step-icons">${icons}</span>`;
+      h += '</div>';
+    });
+    h += '</div>';
+
+    h += '<div class="step-detail" id="dpo-step-detail-panel">';
+    h += '<div class="step-detail-empty">← Click a step to view details</div>';
+    h += '</div>';
+
+    h += '</div>'; // insp-body
+    h += '</div>'; // insp-wrap
+
+    container.innerHTML = h;
+
+    // Scroll to detail
+    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  },
+
+  showStepDetail(stepIndex) {
+    const traj = this.state.currentTraj;
+    if (!traj) return;
+    const step = traj.steps[stepIndex];
+    if (!step) return;
+    this.state.selectedStepIndex = stepIndex;
+
+    const { _repeatMap: repeatMap, _loopSteps: loopSteps } = this.state;
+
+    // Highlight
+    document.querySelectorAll('#dpo-traj-detail .step-row').forEach(r => r.classList.remove('selected'));
+    document.querySelector(`#dpo-traj-detail .step-row[data-step="${stepIndex}"]`)?.classList.add('selected');
+    document.querySelectorAll('#dpo-action-strip .action-block').forEach(b => b.classList.remove('selected-step'));
+    document.querySelector(`#dpo-action-strip .action-block[data-step="${stepIndex}"]`)?.classList.add('selected-step');
+
+    const panel = document.getElementById('dpo-step-detail-panel');
+    const toolKey = step.toolName + (step.parameters.command ? ':' + step.parameters.command : '');
+    const toolClass = `tc-${step.toolName in UI.TOOL_COLORS ? step.toolName : 'unknown'}`;
+
+    let html = '<div class="step-detail-content">';
+
+    // Header
+    html += '<div class="sd-header">';
+    html += `<strong>Step ${stepIndex + 1}</strong>`;
+    html += `<span class="step-tool-badge ${toolClass}" style="font-size:12px;">${toolKey}</span>`;
+    if (step.parameters.path) html += `<span class="badge bb" style="font-size:11px;">${step.parameters.path.split('/').slice(-2).join('/')}</span>`;
+    if (step.hasError) html += '<span class="badge br">Error</span>';
+    if (step.isTruncated) html += '<span class="badge by">Truncated output</span>';
+    if (repeatMap[stepIndex]) html += `<span class="badge by">Repeat ×${repeatMap[stepIndex]}</span>`;
+    if (loopSteps.has(stepIndex)) html += '<span class="badge by">In loop</span>';
+    if (!step.thought) html += '<span class="badge br">Empty think</span>';
+    const gm = this._getGoldenMatch(step, traj.instance_id);
+    if (gm) {
+      const LABELS = {
+        'view-callable': ['🎯', 'Viewed golden callable', 'var(--cyan)'],
+        'edit-callable': ['✏️', 'Edited golden callable', 'var(--orange)'],
+        'view-file':     ['🔍', 'Viewed golden file', 'var(--accent)'],
+        'edit-file':     ['📁', 'Edited golden file', 'var(--yellow)'],
+      };
+      const [icon, desc, clr] = LABELS[gm.level] || ['?','',''];
+      html += `<span class="badge" style="background:rgba(34,211,238,.15);color:${clr};font-size:11px;">${icon} ${desc}</span>`;
+    }
+    html += '</div>';
+
+    // Golden patch banner
+    if (gm) {
+      const LABELS2 = {
+        'view-callable': ['🎯', 'Localization: viewed the golden callable', 'var(--cyan)'],
+        'edit-callable': ['✏️', 'Modification: edited the golden callable', 'var(--orange)'],
+        'view-file':     ['🔍', 'Viewed a file modified by the golden patch', 'var(--accent)'],
+        'edit-file':     ['📁', 'Edited a file modified by the golden patch', 'var(--yellow)'],
+      };
+      const [icon2, desc2] = LABELS2[gm.level] || ['?',''];
+      const callableList = gm.allCallables.map(c =>
+        `<strong>${UI.esc(c.qname)}</strong> <span style="color:var(--text-dim);">(lines ${c.start}–${c.end})</span>`
+      ).join(', ');
+      html += `<div class="sd-golden-banner${gm.level==='edit-callable'?' edit':''}">`;
+      html += `${icon2} <strong>${desc2}</strong><br>`;
+      if (gm.callable) {
+        html += `Callable: <strong>${UI.esc(gm.callable.qname)}</strong>`;
+        html += `<br><code>${UI.esc(gm.callable.file)}</code>`;
+      } else {
+        html += `File: <code>${UI.esc(gm.allCallables[0]?.file || '')}</code>`;
+      }
+      if (gm.allCallables.length > 1) {
+        html += `<div style="margin-top:4px;color:var(--text-dim);">All golden callables: ${callableList}</div>`;
+      }
+      html += '</div>';
+    }
+
+    // Think
+    const dpoThinkLabel = step.thinkMode === 'formatted' ? 'Think <span style="color:var(--accent);font-size:10px;text-transform:none;letter-spacing:0;">(formatted)</span>'
+                         : step.thinkMode === 'free' ? 'Think <span style="color:var(--orange);font-size:10px;text-transform:none;letter-spacing:0;">(free)</span>' : 'Think';
+    html += '<div class="sd-section collapsed">';
+    html += `<div class="sd-section-title collapsed" onclick="UI.toggleSDSection(this)">${dpoThinkLabel}</div>`;
+    html += `<div class="sd-section-body think-body">${UI.esc(step.thought || '(empty)')}</div>`;
+    html += '</div>';
+
+    // Action
+    html += '<div class="sd-section">';
+    html += '<div class="sd-section-title" onclick="UI.toggleSDSection(this)">Action</div>';
+    html += `<div class="sd-section-body">${UI.highlightXml(step.rawAction || '(no action detected)')}</div>`;
+
+    // Inline diff
+    if (step.parameters.command === 'str_replace' && step.parameters.old_str != null) {
+      const ops = UI.diffLines(step.parameters.old_str || '', step.parameters.new_str || '');
+      const diffHtml = UI.renderLineDiff(ops);
+      html += '<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">';
+      html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Diff preview:</div>';
+      if (diffHtml) {
+        html += diffHtml;
+      } else {
+        html += `<div class="diff-old" style="padding:6px;border-radius:4px;white-space:pre-wrap;font-size:11px;margin-bottom:4px;">${UI.esc(step.parameters.old_str || '')}</div>`;
+        html += `<div class="diff-new" style="padding:6px;border-radius:4px;white-space:pre-wrap;font-size:11px;">${UI.esc(step.parameters.new_str || '')}</div>`;
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // Observation
+    html += '<div class="sd-section">';
+    html += '<div class="sd-section-title" onclick="UI.toggleSDSection(this)">Observation</div>';
+    const obsDisplay = step.observation.length > 3000 ? step.observation.substring(0, 3000) + '\n… (truncated for display)' : step.observation;
+    html += `<div class="sd-section-body">${UI.esc(obsDisplay)}</div>`;
+    html += '</div>';
+
+    html += '</div>';
+    panel.innerHTML = html;
+  },
 };
 
 document.addEventListener('DOMContentLoaded', () => UI.init());
