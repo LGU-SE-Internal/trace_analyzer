@@ -391,7 +391,7 @@ def find_modified_callables_from_task(task: dict) -> list[dict]:
 # 3. generate_tracer_module
 # ---------------------------------------------------------------------------
 
-def generate_tracer_module(repo_path: str) -> str:
+def generate_tracer_module(repo_path: str, alt_path: str = "") -> str:
     """Generate _swe_fault_tracer.py source to be deployed in sandbox site-packages.
 
     The tracer captures call stacks when instrumented callables are invoked,
@@ -400,7 +400,24 @@ def generate_tracer_module(repo_path: str) -> str:
 
     Writing to a file bypasses pytest's fd-level capture of stderr, which was
     swallowing all trace output in 31/32 tested instances.
+
+    Args:
+        repo_path: Primary repo path in sandbox (e.g. ``/testbed``).
+        alt_path: Alternate root where test files may live (e.g. ``/root``
+            for R2E-Gym, where ``r2e_tests/`` is moved to ``/root/r2e_tests``
+            and symlinked back). Needed because Python's ``co_filename``
+            resolves symlinks, so test frames show the real path under
+            ``alt_path`` rather than the symlink under ``repo_path``.
     """
+    # Build the list of allowed path prefixes.
+    # alt_path (e.g. "/root") is too broad on its own — it would match
+    # stdlib under /root/.local/share/uv/python/.  Only add the specific
+    # subdirectory that holds symlinked test files.
+    prefixes = [repo_path]
+    if alt_path and alt_path != repo_path:
+        prefixes.append(alt_path + "/r2e_tests")
+    prefixes_tuple = repr(tuple(prefixes))
+
     return textwrap.dedent(f"""\
         import json
         import os
@@ -410,15 +427,17 @@ def generate_tracer_module(repo_path: str) -> str:
         _lock = threading.Lock()
         _seen = set()
         _REPO_PATH = "{repo_path}"
+        _PATH_PREFIXES = {prefixes_tuple}
         _TRACE_FILE = "/tmp/_swe_fault_traces.jsonl"
 
         def trace(callable_name, file_path, def_lineno):
             try:
                 frames = traceback.extract_stack()[:-1]
-                # Filter to repo-internal frames
+                # Filter to repo-internal frames (includes alt_path for
+                # symlinked test dirs like r2e_tests/)
                 repo_frames = [
                     f for f in frames
-                    if f.filename.startswith(_REPO_PATH)
+                    if any(f.filename.startswith(p) for p in _PATH_PREFIXES)
                     and "/.venv/" not in f.filename
                     and "/site-packages/" not in f.filename
                 ]
@@ -560,14 +579,13 @@ def instrument_source(source: str, callables: list[dict]) -> str:
 # 5. instrument_sandbox
 # ---------------------------------------------------------------------------
 
-def _read_sandbox_file(env: "SWEEnv", full_path: str, b64_chunk_lines: int = 100) -> tuple[str, int]:
+def _read_sandbox_file(env: "SWEEnv", full_path: str, b64_chunk_lines: int = 50) -> tuple[str, int]:
     """Read a file from the sandbox without ARL gateway output truncation.
 
     Plain ``cat`` of large files is truncated by the gateway response size
-    limit (~19 KB observed).  This function encodes the file as base64 in the
-    sandbox, reads the base64 output in small chunks (100 lines ≈ 7.5 KB per
-    command, safely below the limit), and decodes locally.  Handles any file
-    content (including long-line source files and binary).
+    limit.  The gateway intermittently enforces a ~4097 byte stdout cap, so
+    each chunk must stay well below that.  At 50 base64 lines × 77 bytes
+    (76 chars + newline) = 3850 bytes per chunk, safely under the limit.
 
     Returns ``(content, exit_code)`` where exit_code=0 on success.
     """
@@ -577,6 +595,13 @@ def _read_sandbox_file(env: "SWEEnv", full_path: str, b64_chunk_lines: int = 100
     _, _, enc_exit = env._execute_raw(f"base64 {full_path} > {B64_TMP} 2>/dev/null")
     if enc_exit != 0:
         return "", enc_exit
+
+    # Get expected file size for post-read verification
+    wc_bytes_out, _, _ = env._execute_raw(f"wc -c {full_path}")
+    try:
+        expected_bytes = int(wc_bytes_out.strip().split()[0])
+    except (ValueError, IndexError):
+        expected_bytes = -1
 
     # Number of base64 lines (each is 76 chars; ~57 bytes decoded per line)
     wc_out, _, _ = env._execute_raw(f"wc -l {B64_TMP}")
@@ -589,12 +614,30 @@ def _read_sandbox_file(env: "SWEEnv", full_path: str, b64_chunk_lines: int = 100
     decoded_chunks: list[bytes] = []
     for start in range(1, b64_total + 2, b64_chunk_lines):
         end = start + b64_chunk_lines - 1
+        expected_lines = min(b64_chunk_lines, b64_total - start + 1)
         chunk_b64, _, chunk_exit = env._execute_raw(f"sed -n '{start},{end}p' {B64_TMP}")
         if chunk_exit not in (0, 1):
             return "", chunk_exit
         clean = chunk_b64.replace("\n", "").replace("\r", "").replace(" ", "")
         if not clean:
             continue
+
+        # Detect gateway truncation: fewer lines than expected
+        actual_lines = chunk_b64.count("\n") + (1 if chunk_b64 and not chunk_b64.endswith("\n") else 0)
+        if actual_lines < expected_lines:
+            logger.warning(
+                "Gateway truncation at lines %d-%d of %s: got %d/%d lines (%d bytes). "
+                "Retrying with smaller chunks.",
+                start, end, full_path, actual_lines, expected_lines, len(chunk_b64),
+            )
+            # Retry the entire file with half-sized chunks
+            env._run(f"rm -f {B64_TMP}")
+            if b64_chunk_lines > 10:
+                return _read_sandbox_file(env, full_path, b64_chunk_lines=b64_chunk_lines // 2)
+            else:
+                logger.warning("Chunk size too small, giving up on %s", full_path)
+                return "", 1
+
         try:
             padding = (4 - len(clean) % 4) % 4
             decoded_chunks.append(base64.b64decode(clean + "=" * padding))
@@ -603,7 +646,19 @@ def _read_sandbox_file(env: "SWEEnv", full_path: str, b64_chunk_lines: int = 100
             return "", 1
 
     env._run(f"rm -f {B64_TMP}")
-    return b"".join(decoded_chunks).decode("utf-8", errors="replace"), 0
+    content = b"".join(decoded_chunks)
+
+    # Verify completeness
+    if expected_bytes >= 0 and len(content) != expected_bytes:
+        logger.warning(
+            "Size mismatch for %s: expected %d bytes, got %d. Retrying with smaller chunks.",
+            full_path, expected_bytes, len(content),
+        )
+        if b64_chunk_lines > 10:
+            return _read_sandbox_file(env, full_path, b64_chunk_lines=b64_chunk_lines // 2)
+        return "", 1
+
+    return content.decode("utf-8", errors="replace"), 0
 
 
 def _get_patched_py_files(patch_text: str) -> set[str]:
@@ -727,7 +782,7 @@ def instrument_sandbox(
         logger.warning("Failed to find site-packages: %s %s", site_output, site_err)
         return []
 
-    tracer_source = generate_tracer_module(env.repo_path)
+    tracer_source = generate_tracer_module(env.repo_path, getattr(env, "alt_path", ""))
     tracer_b64 = base64.b64encode(tracer_source.encode()).decode()
     tracer_dest = f"{site_packages}/_swe_fault_tracer.py"
     env._run(f"printf '%s' '{tracer_b64}' | base64 -d > {tracer_dest}")
@@ -937,6 +992,7 @@ def parse_fault_traces_from_file(
     env: "SWEEnv",
     modified_callables: list[dict],
     repo_path: str,
+    alt_path: str = "",
 ) -> list[list[dict]]:
     """Read ``/tmp/_swe_fault_traces.jsonl`` from the sandbox and parse traces.
 
@@ -991,10 +1047,13 @@ def parse_fault_traces_from_file(
             frame_func = f.get("name", "")
             frame_code = f.get("code", "")
 
-            # Make file_path relative to repo for matching
+            # Make file_path relative to repo (or alt_path/r2e_tests) for matching
             rel_path = frame_file
             if frame_file.startswith(repo_path + "/"):
                 rel_path = frame_file[len(repo_path) + 1 :]
+            elif alt_path and frame_file.startswith(alt_path + "/r2e_tests/"):
+                rel_path = frame_file[len(alt_path) + 1 :]
+                rel_path = frame_file[len(alt_path) + 1 :]
 
             # Check if this frame is in a patched callable
             is_patched = False

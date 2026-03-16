@@ -99,15 +99,18 @@ def _non_test_py_diffs(file_diffs: list[dict], task: dict) -> list[dict]:
 def classify_bonus_map(bm: dict) -> dict:
     """Classify a single bonus map JSON into the taxonomy.
 
-    Returns a dict with keys:
-        category: top-level category string
-        subcategory: fine-grained subcategory string
-        n_patched: number of patched callables
-        n_nodes: number of call graph nodes
-        n_test_entries: number of test entry nodes (d=1.0)
-        n_intermediate: number of intermediate nodes (0 < d < 1)
-        hop_max: maximum hop distance
-        instance_id: instance identifier
+    Uses ``case_type`` from the JSON when available (written by
+    ``precompute_bonus_maps.py``), otherwise re-derives it.
+
+    case_type values (flat strings matching precompute_bonus_maps.py):
+        direct        — F2P test calls patched callable directly
+        standard      — F2P test reaches patched callable through intermediates
+        crash         — tests crashed before reaching patched callable
+        newly_created — all patched callables are pure additions
+        no_callables  — patch modifies no callable
+        no_f2p_trace  — instrumentation succeeded but no F2P trace captured
+
+    Returns a dict with instance stats and category/case_type fields.
     """
     instance_id = bm.get("instance_id", "unknown")
     patched = bm.get("patched_callables", [])
@@ -140,24 +143,31 @@ def classify_bonus_map(bm: dict) -> dict:
         "hop_max": hop_max,
     }
 
-    # Classification logic
-    if n_patched == 0:
-        result["category"] = "no_callables"
-        result["subcategory"] = "no_callables"
-    elif not traceable:
-        result["category"] = "untraceable"
-        result["subcategory"] = "untraceable_no_trace"
-    elif n_test_entries == 0:
-        # Has patched callables, marked traceable, but no test entries
-        # This is the static-only fallback case (only patched nodes at d=0)
-        result["category"] = "untraceable"
-        result["subcategory"] = "static_only"
-    elif n_intermediate > 0:
-        result["category"] = "traceable"
-        result["subcategory"] = "standard"
-    else:
-        result["category"] = "traceable"
-        result["subcategory"] = "direct"
+    # Prefer pre-computed case_type from the bonus map JSON
+    case_type = bm.get("case_type")
+    if not case_type:
+        # Re-derive using the same logic as precompute_bonus_maps.py
+        if not patched:
+            if bm.get("newly_created_callables"):
+                case_type = "newly_created"
+            else:
+                case_type = "no_callables"
+        elif not traceable:
+            case_type = "no_callables"
+        elif bm.get("crash"):
+            case_type = "crash"
+        elif n_test_entries == 0:
+            case_type = "no_f2p_trace"
+        elif n_intermediate > 0:
+            case_type = "standard"
+        else:
+            case_type = "direct"
+
+    result["case_type"] = case_type
+    result["category"] = "traceable" if case_type in ("direct", "standard") else "untraceable"
+
+    if bm.get("newly_created_callables"):
+        result["n_newly_created"] = len(bm["newly_created_callables"])
 
     return result
 
@@ -258,52 +268,37 @@ def print_bonus_map_report(bonus_dir: str, maps: dict[str, dict]) -> None:
 
     classifications = [classify_bonus_map(bm) for bm in maps.values()]
 
-    # Top-level categories
-    cat_counts = Counter(c["category"] for c in classifications)
-    sub_counts = Counter(c["subcategory"] for c in classifications)
+    # Counts by case_type (flat string matching precompute_bonus_maps.py)
+    case_counts = Counter(c["case_type"] for c in classifications)
 
-    print("=" * 72)
-    print(f"  Bonus Map Analysis  ({total} instances from {bonus_dir})")
-    print("=" * 72)
-    print()
+    n_traceable = case_counts.get("direct", 0) + case_counts.get("standard", 0)
+    n_untraceable = total - n_traceable
+
+    print(f"\n{'='*50}")
+    print(f"Bonus Map Analysis: {total} instances from {bonus_dir}")
+    print(f"{'='*50}")
 
     # Overview bar
-    n_traceable = cat_counts.get("traceable", 0)
     bar_w = 40
     filled = round(n_traceable / total * bar_w) if total else 0
     bar = "#" * filled + "." * (bar_w - filled)
-    print(f"  Traceable  [{bar}]  {n_traceable}/{total} ({n_traceable/total*100:.1f}%)")
-    print()
+    print(f"\nTraceable  [{bar}]  {n_traceable}/{total} ({n_traceable/total*100:.1f}%)")
 
-    # Category breakdown
-    print("  Category breakdown:")
-    cat_order = ["traceable", "untraceable", "no_callables"]
-    for cat in cat_order:
-        cnt = cat_counts.get(cat, 0)
-        if cnt == 0:
-            continue
-        print(f"    {cat:<30s} {cnt:>5}  ({cnt/total*100:.1f}%)")
-    print()
+    # Summary table (same format as precompute_bonus_maps.py)
+    print(f"\ntraceable/          {n_traceable:5d}  ({100*n_traceable/total:.1f}%)")
+    print(f"  direct             {case_counts['direct']:5d}")
+    print(f"  standard           {case_counts['standard']:5d}")
+    print(f"\nuntraceable/        {n_untraceable:5d}  ({100*n_untraceable/total:.1f}%)")
+    print(f"  crash              {case_counts['crash']:5d}")
+    print(f"  newly_created      {case_counts['newly_created']:5d}")
+    print(f"  no_callables       {case_counts['no_callables']:5d}")
+    print(f"  no_f2p_trace       {case_counts['no_f2p_trace']:5d}")
 
-    # Subcategory breakdown
-    print("  Subcategory breakdown:")
-    sub_order = [
-        ("standard", "traceable + intermediate nodes"),
-        ("direct", "traceable, test→patched directly"),
-        ("static_only", "has callables, no test entries (0 traces)"),
-        ("untraceable_no_trace", "has callables, marked untraceable"),
-        ("no_callables", "no modified callables detected"),
-    ]
-    for subcat, desc in sub_order:
-        cnt = sub_counts.get(subcat, 0)
-        if cnt == 0:
-            continue
-        print(f"    {subcat:<24s} {cnt:>5}  ({cnt/total*100:.1f}%)  — {desc}")
-    # Any subcategories not in the predefined order
-    for subcat, cnt in sub_counts.most_common():
-        if subcat not in dict(sub_order):
-            print(f"    {subcat:<24s} {cnt:>5}  ({cnt/total*100:.1f}%)")
-    print()
+    # Any case_types not in the standard set
+    standard_types = {"direct", "standard", "crash", "newly_created", "no_callables", "no_f2p_trace"}
+    for ct, cnt in case_counts.most_common():
+        if ct not in standard_types:
+            print(f"  {ct:<18s} {cnt:5d}")
 
     # Traceable stats
     traceable_cls = [c for c in classifications if c["category"] == "traceable"]
@@ -312,34 +307,33 @@ def print_bonus_map_report(bonus_dir: str, maps: dict[str, dict]) -> None:
         intermediates = [c["n_intermediate"] for c in traceable_cls]
         test_entries = [c["n_test_entries"] for c in traceable_cls]
 
-        print("  Traceable instance statistics:")
-        print(f"    hop_max:        mean={sum(hops)/len(hops):.1f}  "
+        print(f"\nTraceable instance statistics:")
+        print(f"  hop_max:        mean={sum(hops)/len(hops):.1f}  "
               f"median={sorted(hops)[len(hops)//2]}  max={max(hops)}")
-        print(f"    intermediate:   mean={sum(intermediates)/len(intermediates):.1f}  "
+        print(f"  intermediate:   mean={sum(intermediates)/len(intermediates):.1f}  "
               f"median={sorted(intermediates)[len(intermediates)//2]}  max={max(intermediates)}")
-        print(f"    test_entries:   mean={sum(test_entries)/len(test_entries):.1f}  "
+        print(f"  test_entries:   mean={sum(test_entries)/len(test_entries):.1f}  "
               f"median={sorted(test_entries)[len(test_entries)//2]}  max={max(test_entries)}")
-        print()
 
         # Hop distribution
         hop_dist = Counter(hops)
-        print("  hop_max distribution (traceable):")
+        print(f"\n  hop_max distribution (traceable):")
         for h in sorted(hop_dist):
             cnt = hop_dist[h]
             print(f"    hop_max={h}: {cnt:>5} instances  ({cnt/len(traceable_cls)*100:.1f}%)")
-        print()
 
-    # Examples per subcategory
-    print("  Examples:")
-    by_sub: dict[str, list[dict]] = {}
+    # Examples per case_type
+    print(f"\nExamples:")
+    by_ct: dict[str, list[dict]] = {}
     for c in classifications:
-        by_sub.setdefault(c["subcategory"], []).append(c)
+        by_ct.setdefault(c["case_type"], []).append(c)
 
-    for subcat, _ in sub_order:
-        items = by_sub.get(subcat, [])
+    ct_order = ["standard", "direct", "crash", "newly_created", "no_callables", "no_f2p_trace"]
+    for ct in ct_order:
+        items = by_ct.get(ct, [])
         if not items:
             continue
-        print(f"    [{subcat}]")
+        print(f"  [{ct}]")
         for c in items[:3]:
             extras = []
             if c["n_intermediate"] > 0:
@@ -347,7 +341,7 @@ def print_bonus_map_report(bonus_dir: str, maps: dict[str, dict]) -> None:
             if c["n_test_entries"] > 0:
                 extras.append(f"tests={c['n_test_entries']}")
             extras.append(f"hop_max={c['hop_max']}")
-            print(f"      {c['instance_id']}  ({', '.join(extras)})")
+            print(f"    {c['instance_id']}  ({', '.join(extras)})")
     print()
 
 

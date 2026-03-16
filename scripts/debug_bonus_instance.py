@@ -293,7 +293,7 @@ def main():
 
         # Step 11: build bonus map (same logic as precompute_bonus_maps.py)
         print(f"\n[11] Building bonus map...")
-        traces = parse_fault_traces_from_file(env, instrumented, env.repo_path)
+        traces = parse_fault_traces_from_file(env, instrumented, env.repo_path, env.alt_path)
         print(f"    Raw traces: {len(traces)}")
 
         # F2P filtering (inlined to avoid cross-script import issues)
@@ -323,17 +323,23 @@ def main():
                 f2p_funcs = {str(t).split("::")[-1] for t in f2p_list} or None
 
         print(f"    F2P funcs: {f2p_funcs}")
+        _FIXTURE_NAMES = {"setUp", "tearDown", "setUpClass", "tearDownClass",
+                          "asyncSetUp", "asyncTearDown"}
         if f2p_funcs is not None:
             pre = len(traces)
             filtered = []
             for trace in traces:
+                keep = False
                 for frame in trace:
                     fp = frame.get("file_path", "")
                     if not _is_test_file(fp):
                         continue
-                    if frame.get("func_name", "") in f2p_funcs:
-                        filtered.append(trace)
+                    fn = frame.get("func_name", "")
+                    if fn in f2p_funcs or fn in _FIXTURE_NAMES:
+                        keep = True
                         break
+                if keep:
+                    filtered.append(trace)
             traces = filtered
             print(f"    After F2P filter: {pre} → {len(traces)}")
 
