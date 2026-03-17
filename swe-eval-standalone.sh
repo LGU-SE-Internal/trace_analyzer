@@ -66,7 +66,7 @@ MODEL_PATH="$ROOT_DIR/models/$MODEL_NAME"
 
 # Match veRL's formula: max_model_len = prompt_length + response_length
 # (see verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py:195)
-SERVER_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-163840}"  # 131072 + 32768
+SERVER_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-40960}"  # 131072 + 32768
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 
 # Check if a server is already serving the requested model.
@@ -106,11 +106,11 @@ start_server() {
     if [ "$BACKEND" = "sglang" ]; then
         SGLANG_DP="${SGLANG_DP:-1}"
         echo "Starting SGLang server: model=$MODEL_PATH tp=$SERVER_TP dp=$SGLANG_DP port=$SERVER_PORT"
-        uv run --no-sync python -m sglang_router.launch_server \
+        uv run --no-sync python -m sglang.launch_server \
             --model-path "$MODEL_PATH" \
             --port "$SERVER_PORT" \
-            --tp-size "$SERVER_TP" \
-            --dp-size "$SGLANG_DP" \
+            --tp "$SERVER_TP" \
+            --dp "$SGLANG_DP" \
             --context-length "$SERVER_MAX_MODEL_LEN" \
             --dtype bfloat16 \
             &>"$OUTPUT_DIR/sglang.log" &
