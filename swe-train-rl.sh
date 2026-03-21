@@ -52,6 +52,7 @@ MAX_STEPS="${MAX_STEPS:-25}"
 OVERLONG_FILTER="${OVERLONG_FILTER:-false}"
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-32768}"
 MODEL_PATH_OVERRIDE="${MODEL_PATH_OVERRIDE:-}"
+AGG_MODE="${AGG_MODE:-seq-mean-token-sum-norm}"
 
 # Resolve model path
 if [ -n "$MODEL_PATH_OVERRIDE" ]; then
@@ -110,7 +111,7 @@ python3 -m rllm.trainer.verl.train_agent_ppo \
     actor_rollout_ref.hybrid_engine=true \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=true \
-    actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-sum \
+    actor_rollout_ref.actor.loss_agg_mode=$AGG_MODE \
     actor_rollout_ref.actor.ppo_mini_batch_size=$((BS_PER_NODE / GD_PER_STEP * NNODES)) \
     actor_rollout_ref.actor.use_dynamic_bsz=false \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
@@ -165,4 +166,7 @@ python3 -m rllm.trainer.verl.train_agent_ppo \
 
 # please keep `n_parallel_agents` on each node to be small to optimize KV cache utilization.
 # to merge rl checkpoints, use:
-# python3 -m verl.model_merger merge --backend fsdp --local_dir $CKPT_PATH/global_step_$STEP/actor --target_dir $MODEL_PATH
+# python3 -m verl.model_merger merge \
+#     --backend fsdp \
+#     --local_dir $CKPT_PATH/global_step_$STEP/actor \
+#     --target_dir $MODEL_PATH
