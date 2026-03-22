@@ -454,7 +454,8 @@ class StrReplaceEditor:
                 return EditorResult(output="", error=_LINT_ERROR_TEMPLATE + lint_error)
 
         try:
-            path.write_text(file_text, encoding="utf-8")
+            clean_text = file_text.encode("utf-8", errors="replace").decode("utf-8")
+            path.write_text(clean_text, encoding="utf-8")
             self.file_history[str(path)].append("")
         except Exception as e:
             raise EditorError(f"Error creating file at {path}: {e}")
@@ -578,7 +579,8 @@ class StrReplaceEditor:
 
     def write_file(self, path: Path, content: str):
         try:
-            path.write_text(content, encoding="utf-8")
+            clean_content = content.encode("utf-8", errors="replace").decode("utf-8")
+            path.write_text(clean_content, encoding="utf-8")
         except Exception as e:
             raise EditorError(f"Failed to write file {path}: {e}")
 
