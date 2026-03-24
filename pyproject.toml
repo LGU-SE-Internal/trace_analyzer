@@ -141,9 +141,7 @@ override-dependencies = [
 ]
 
 [tool.uv.extra-build-dependencies]
-flash-attn = [
-    { requirement = "torch", match-runtime = true },
-]
+flash-attn = ["torch>=2.8.0"]
 
 [tool.ruff]
 line-length = 5000 # TODO: Reduce this to a more reasonable value
