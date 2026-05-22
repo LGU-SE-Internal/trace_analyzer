@@ -278,16 +278,38 @@ class SWEEnv(BaseEnv):
             self._run("uv pip install chardet")
             self._run("find . -name '*.pyc' -delete")
             self._run("find . -name '__pycache__' -exec rm -rf {} +")
-            self._run("find /r2e_tests -name '*.pyc' -delete")
-            self._run("find /r2e_tests -name '__pycache__' -exec rm -rf {} +")
+            self._run("find /r2e_tests -name '*.pyc' -delete 2>/dev/null; true")
+            self._run("find /r2e_tests -name '__pycache__' -exec rm -rf {} + 2>/dev/null; true")
             for skip_file in SKIP_FILES_NEW:
                 if skip_file == "r2e_tests":
                     continue
                 self._run(
                     f"mv {self.repo_path}/{skip_file} {self.alt_path}/{skip_file}"
                 )
-            self._run(f"mv /r2e_tests {self.alt_path}/r2e_tests")
-            self._run(f"ln -s {self.alt_path}/r2e_tests {self.repo_path}/r2e_tests")
+            # Move r2e_tests to alt_path and symlink back.
+            # Some images have r2e_tests at /r2e_tests, others at /testbed/r2e_tests.
+            self._run(
+                f"if [ -d /r2e_tests ] && [ ! -d {self.alt_path}/r2e_tests ]; then "
+                f"  mv /r2e_tests {self.alt_path}/r2e_tests; "
+                f"fi"
+            )
+            self._run(
+                f"if [ -d {self.repo_path}/r2e_tests ] && [ ! -L {self.repo_path}/r2e_tests ] "
+                f"   && [ ! -d {self.alt_path}/r2e_tests ]; then "
+                f"  mv {self.repo_path}/r2e_tests {self.alt_path}/r2e_tests; "
+                f"fi"
+            )
+            # Ensure symlink from repo_path → alt_path (if not already there)
+            self._run(
+                f"if [ -d {self.alt_path}/r2e_tests ] && [ ! -e {self.repo_path}/r2e_tests ]; then "
+                f"  ln -s {self.alt_path}/r2e_tests {self.repo_path}/r2e_tests; "
+                f"fi"
+            )
+
+        # Per-repo dependency fixups (mirrors R2E-Gym install_utils)
+        from rllm.environments.swe.install_utils import apply_repo_fixups
+        docker_image = self.entry.get("docker_image", self.entry.get("image_name", ""))
+        apply_repo_fixups(self, docker_image)
 
     def _provision_tools(self, tool_files: list[str]):
         """Copy tool scripts into sandbox and make them executable."""
