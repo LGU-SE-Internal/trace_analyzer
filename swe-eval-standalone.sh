@@ -36,8 +36,7 @@
 
 # ============ Arguments ============
 MODEL_NAME=${1:?'Usage: bash swe-eval-standalone.sh <model_name> [n_samples] [root_dir]'}
-N_SAMPLES=${2:-1}
-ROOT_DIR=${3:-'/mnt/bn/trae-research-models/xujunjielong'}
+ROOT_DIR=${2:-'/mnt/bn/trae-research-models/xujunjielong'}
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-eval}"
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
@@ -49,6 +48,7 @@ DRY_RUN="${DRY_RUN:-false}"
 NORMALIZE_PYTEST="${NORMALIZE_PYTEST:-false}"
 MAX_TASKS="${MAX_TASKS:-}"
 BACKEND="${BACKEND:-sglang}"
+N_SAMPLES=${N_SAMPLES:-1}
 
 if [ "$BACKEND" != "vllm" ] && [ "$BACKEND" != "sglang" ]; then
     echo "ERROR: BACKEND must be 'vllm' or 'sglang' (got: $BACKEND)" >&2
@@ -69,32 +69,31 @@ MODEL_PATH="$ROOT_DIR/models/$MODEL_NAME"
 SERVER_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-40960}"  # 131072 + 32768
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 
-# Check if a server is already serving the requested model.
+# Check if the correct backend+model is already serving on the port.
 check_serving_model() {
     local response
     response=$(curl -sf "http://localhost:${SERVER_PORT}/v1/models" 2>/dev/null) || return 1
-    echo "$response" | grep -q "$MODEL_PATH" && return 0
-    echo "$response" | grep -q "$MODEL_NAME" && return 0
-    return 1
+    # Check model matches
+    echo "$response" | grep -qi "$MODEL_NAME" || return 1
+    # Check backend matches (wrong backend serving the same model → need restart)
+    if [ "$BACKEND" = "sglang" ]; then
+        pgrep -f "sglang.*launch_server" >/dev/null 2>&1 || return 1
+    else
+        pgrep -f "vllm" >/dev/null 2>&1 || return 1
+    fi
+    return 0
 }
 
-# Kill any existing server processes on the target port.
+# Kill any existing server processes on the target port (both vLLM and SGLang).
 kill_existing_server() {
+    # Use lsof to find the actual process holding the port
     local pids
-    if [ "$BACKEND" = "sglang" ]; then
-        pids=$(pgrep -f "sglang.*--port $SERVER_PORT" 2>/dev/null)
-    else
-        pids=$(pgrep -f "vllm serve.*--port $SERVER_PORT" 2>/dev/null || pgrep -f "vllm.entrypoints.*--port $SERVER_PORT" 2>/dev/null)
-    fi
+    pids=$(lsof -ti :$SERVER_PORT 2>/dev/null)
     if [ -n "$pids" ]; then
         echo "Killing existing server(s) on port $SERVER_PORT (pids: $pids)..."
         echo "$pids" | xargs kill 2>/dev/null
         sleep 3
-        if [ "$BACKEND" = "sglang" ]; then
-            pids=$(pgrep -f "sglang.*--port $SERVER_PORT" 2>/dev/null)
-        else
-            pids=$(pgrep -f "vllm serve.*--port $SERVER_PORT" 2>/dev/null || pgrep -f "vllm.entrypoints.*--port $SERVER_PORT" 2>/dev/null)
-        fi
+        pids=$(lsof -ti :$SERVER_PORT 2>/dev/null)
         if [ -n "$pids" ]; then
             echo "$pids" | xargs kill -9 2>/dev/null
             sleep 1
@@ -164,7 +163,7 @@ DATA_FILE="${DATA_FILE:-data/swe/SWE_Bench_Verified.parquet}"
 if [ "$DRY_RUN" = "true" ]; then
     OUTPUT_DIR="$ROOT_DIR/experiments/eval/dry_run"
 else
-    OUTPUT_DIR="$ROOT_DIR/experiments/eval/$MODEL_NAME"
+    OUTPUT_DIR="$ROOT_DIR/experiments/eval/$MODEL_NAME-$BACKEND"
 fi
 
 mkdir -p "$OUTPUT_DIR"
@@ -209,4 +208,4 @@ python3 "$SCRIPT_DIR/utils/eval/swe_eval_standalone.py" \
     --output_dir "$OUTPUT_DIR" \
     $EXTRA_ARGS
 
-pkill -f "vllm\|sglang"
+# pkill -f "vllm\|sglang" # if this is the last run
