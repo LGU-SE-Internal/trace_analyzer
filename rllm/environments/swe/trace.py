@@ -1376,24 +1376,36 @@ def build_call_graph_from_traces(
             - patched_callables: the input modified_callables
             - traceable: True
     """
-    # Build a lookup for modified callable positions
-    patched_set = set()
-    for mc in modified_callables:
-        patched_set.add((mc["file_path"], mc["qualified_name"]))
-
     # node_key → {file_path, func_name, min_hop_distance, line_no}
     # We use file_path::qualified_name as node key
     node_info: dict[str, dict] = {}
 
-    # 4a. Seed patched callables at d=0
+    # Strip internal instrumentation keys from output
+    clean_callables = [{k: v for k, v in mc.items() if not k.startswith("instr_")} for mc in modified_callables]
+
+    # Identify which patched callables appeared in runtime traces.
+    observed_patched_keys: set[tuple[str, str]] = set()
+    for trace in traces:
+        for frame in trace:
+            if frame.get("is_patched"):
+                qn = frame.get("qualified_name", frame.get("func_name"))
+                observed_patched_keys.add((frame["file_path"], qn))
+
+    unobserved_patched_callables: list[dict] = []
+
+    # 4a. Seed only observed patched callables at d=0
     for mc in modified_callables:
-        seed_key = f"{mc['file_path']}::{mc['qualified_name']}"
-        node_info[seed_key] = {
-            "file_path": mc["file_path"],
-            "func_name": mc["qualified_name"],
-            "line_no": mc["start_line"],
-            "hop_distance": 0,
-        }
+        if (mc["file_path"], mc["qualified_name"]) in observed_patched_keys:
+            seed_key = f"{mc['file_path']}::{mc['qualified_name']}"
+            node_info[seed_key] = {
+                "file_path": mc["file_path"],
+                "func_name": mc["qualified_name"],
+                "line_no": mc["start_line"],
+                "hop_distance": 0,
+                "observed_in_trace": True,
+            }
+        else:
+            unobserved_patched_callables.append({k: v for k, v in mc.items() if not k.startswith("instr_")})
 
     for trace in traces:
         # Find patched frame indices in this trace
@@ -1413,16 +1425,19 @@ def build_call_graph_from_traces(
                         "func_name": frame.get("qualified_name", frame["func_name"]),
                         "line_no": frame["line_no"],
                         "hop_distance": hop,
+                        "observed_in_trace": True,
                     }
                 else:
                     # Keep minimum hop distance
                     node_info[node_key]["hop_distance"] = min(node_info[node_key]["hop_distance"], hop)
+                    node_info[node_key]["observed_in_trace"] = True
 
     if not node_info:
         return {
             "call_graph_nodes": {},
             "hop_max": 0,
-            "patched_callables": modified_callables,
+            "patched_callables": clean_callables,
+            "unobserved_patched_callables": unobserved_patched_callables,
             "traceable": False,
         }
 
@@ -1443,6 +1458,7 @@ def build_call_graph_from_traces(
             "end_line": info["line_no"],  # will be enriched below
             "hop_distance": info["hop_distance"],
             "normalized_distance": info["hop_distance"] / hop_max,
+            "observed_in_trace": info["observed_in_trace"],
         }
 
     # Enrich patched callable nodes with full line ranges from static AST analysis
@@ -1477,12 +1493,12 @@ def build_call_graph_from_traces(
                     node["end_line"] = ci.end_line
                     break
 
-    # Strip internal instrumentation keys from output
-    clean_callables = [{k: v for k, v in mc.items() if not k.startswith("instr_")} for mc in modified_callables]
+    traceable = any(node["hop_distance"] == 0 for node in call_graph_nodes.values())
 
     return {
         "call_graph_nodes": call_graph_nodes,
         "hop_max": hop_max,
         "patched_callables": clean_callables,
-        "traceable": True,
+        "unobserved_patched_callables": unobserved_patched_callables,
+        "traceable": traceable,
     }
