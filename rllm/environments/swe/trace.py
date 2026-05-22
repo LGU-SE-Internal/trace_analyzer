@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import ast
 import base64
+import io
 import json
 import logging
 import re
 import textwrap
 import threading
+import tokenize
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
@@ -470,6 +472,116 @@ def generate_tracer_module(repo_path: str, alt_path: str = "") -> str:
 # 4. instrument_source
 # ---------------------------------------------------------------------------
 
+def _find_signature_colon(line_text: str) -> int:
+    """Find the colon that terminates a one-line function signature."""
+    paren_depth = 0
+    for idx, ch in enumerate(line_text):
+        if ch == '(':
+            paren_depth += 1
+        elif ch == ')':
+            paren_depth -= 1
+        elif ch == '#':
+            break
+        elif ch == ':' and paren_depth <= 0:
+            return idx
+    return -1
+
+
+def _line_text_and_ending(line: str) -> tuple[str, str]:
+    """Split one physical source line into text and its original line ending."""
+    if line.endswith("\r\n"):
+        return line[:-2], "\r\n"
+    if line.endswith("\n"):
+        return line[:-1], "\n"
+    if line.endswith("\r"):
+        return line[:-1], "\r"
+    return line, "\n"
+
+
+def _split_oneline_simple_suite(suite: str) -> list[str]:
+    """Split a one-line simple suite into semicolon-separated statements."""
+    statements: list[str] = []
+    start_col = 0
+    depth = 0
+
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(suite).readline)
+        for token in tokens:
+            if token.type != tokenize.OP:
+                continue
+            if token.string in "([{":
+                depth += 1
+            elif token.string in ")]}":
+                depth = max(0, depth - 1)
+            elif token.string == ";" and depth == 0:
+                statement = suite[start_col:token.start[1]].strip()
+                if statement:
+                    statements.append(statement)
+                start_col = token.end[1]
+    except tokenize.TokenError:
+        return [part.strip() for part in suite.split(";") if part.strip()]
+
+    tail = suite[start_col:].strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
+def _rewrite_oneline_suite(lines: list[str], func_lineno: int) -> int:
+    """Expand ``def f(): stmt`` into a multi-line suite in-place.
+
+    Returns the number of additional physical lines inserted.
+    """
+    line_idx = func_lineno - 1
+    if line_idx < 0 or line_idx >= len(lines):
+        return 0
+
+    line_text, line_ending = _line_text_and_ending(lines[line_idx])
+    colon_idx = _find_signature_colon(line_text)
+    if colon_idx < 0:
+        return 0
+
+    suite = line_text[colon_idx + 1:].strip()
+    if not suite:
+        return 0
+
+    signature = line_text[:colon_idx + 1].rstrip()
+    def_indent = line_text[: len(line_text) - len(line_text.lstrip())]
+    body_indent = def_indent + "    "
+    statements = _split_oneline_simple_suite(suite)
+    if not statements:
+        return 0
+
+    rewritten = [signature + line_ending]
+    rewritten.extend(f"{body_indent}{statement}{line_ending}" for statement in statements)
+    lines[line_idx:line_idx + 1] = rewritten
+    return len(rewritten) - 1
+
+
+def _find_function_node_at_line(source: str, callable_info: dict) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """Find the function node matching the callable metadata."""
+    try:
+        with _ast_lock:
+            tree = ast.parse(source)
+    except SyntaxError:
+        return None
+
+    target_name = callable_info.get("name")
+    target_lineno = callable_info.get("start_line")
+    target_qualified_name = callable_info.get("qualified_name")
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.lineno != target_lineno:
+            continue
+        if node.name == target_name:
+            return node
+        if target_qualified_name and target_qualified_name.split(".")[-1] == node.name:
+            return node
+    return None
+
+
 def instrument_source(source: str, callables: list[dict]) -> str:
     """Insert trace calls into source after each callable's def line.
 
@@ -484,6 +596,10 @@ def instrument_source(source: str, callables: list[dict]) -> str:
     sorted_callables = sorted(callables, key=lambda c: c["start_line"], reverse=True)
 
     for c in sorted_callables:
+        function_node = _find_function_node_at_line("".join(lines), c)
+        if function_node and function_node.body and function_node.body[0].lineno == function_node.lineno:
+            _rewrite_oneline_suite(lines, c["start_line"])
+
         func_line_idx = c["start_line"] - 1  # 0-based index
 
         if func_line_idx >= len(lines):
