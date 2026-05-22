@@ -239,6 +239,7 @@ def compute_static_bonus_map(task: dict) -> dict:
             "end_line": mc["end_line"],
             "hop_distance": 0,
             "normalized_distance": 0.0,
+            "observed_in_trace": False,
         }
 
     return {
