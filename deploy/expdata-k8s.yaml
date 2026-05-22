@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: expdata-pvc
+  namespace: default
+spec:
+  storageClassName: ebs-ssd
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: expdata
+  namespace: default
+  labels:
+    app: expdata
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: expdata
+  template:
+    metadata:
+      labels:
+        app: expdata
+    spec:
+      containers:
+        - name: expdata
+          image: pair-diag-cn-guangzhou.cr.volces.com/code/expdata:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8502
+              name: http
+          env:
+            - name: EXPDATA_DB_PATH
+              value: /data/expdata.db
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8502
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8502
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: expdata-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: expdata
+  namespace: default
+spec:
+  selector:
+    app: expdata
+  ports:
+    - port: 8502
+      targetPort: 8502
+      name: http
+  type: NodePort

@@ -315,6 +315,10 @@ echo ""
 _DISABLE_THINKING_FLAG=""
 [ "$DISABLE_THINKING" = "true" ] && _DISABLE_THINKING_FLAG="--disable_thinking"
 
+UPLOAD_URL="${UPLOAD_URL:-http://expdata.default.svc.cluster.local:8502}"
+_UPLOAD_FLAG=""
+[ "$UPLOAD" != "false" ] && _UPLOAD_FLAG="--upload --upload_url $UPLOAD_URL"
+
 python3 utils/collect/collect_swe_trajectories.py \
     --model "$_MODEL_ARG" \
     --base_url "$BASE_URL" \
@@ -335,4 +339,6 @@ python3 utils/collect/collect_swe_trajectories.py \
     --step_timeout "$STEP_TIMEOUT" \
     --reward_timeout "$REWARD_TIMEOUT" \
     --checkpoint_interval "$CHECKPOINT_INTERVAL" \
-    $_DISABLE_THINKING_FLAG
+    $_DISABLE_THINKING_FLAG \
+    $_UPLOAD_FLAG \
+    2>&1 | tee output.log

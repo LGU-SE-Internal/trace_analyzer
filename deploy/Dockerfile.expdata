@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    fastapi \
+    uvicorn[standard] \
+    aiosqlite \
+    pydantic \
+    python-multipart \
+    pandas \
+    pyarrow
+
+COPY utils/__init__.py utils/__init__.py
+COPY utils/expdata/__init__.py utils/expdata/__init__.py
+COPY utils/expdata/schema.py utils/expdata/schema.py
+COPY utils/expdata/server.py utils/expdata/server.py
+COPY expdata_dashboard.html expdata_dashboard.html
+
+ENV EXPDATA_DB_PATH=/data/expdata.db
+ENV EXPDATA_DASHBOARD_PATH=/app/expdata_dashboard.html
+
+EXPOSE 8502
+
+CMD ["uvicorn", "utils.expdata.server:app", "--host", "0.0.0.0", "--port", "8502"]

@@ -191,6 +191,11 @@ if [ -n "$MAX_TASKS" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --max_tasks $MAX_TASKS"
 fi
 
+UPLOAD_URL="${UPLOAD_URL:-http://expdata.default.svc.cluster.local:8502}"
+if [ "$UPLOAD" != "false" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --upload --upload_url $UPLOAD_URL"
+fi
+
 # ============ Run Evaluation ============
 python3 "$SCRIPT_DIR/utils/eval/swe_eval_standalone.py" \
     --data "$DATA_FILE" \
