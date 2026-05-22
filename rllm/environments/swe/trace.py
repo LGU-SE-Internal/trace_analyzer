@@ -261,9 +261,9 @@ def extract_callables_from_ast(
 ) -> dict[str, CallableInfo]:
     """Parse *source* with :mod:`ast` and return every callable definition.
 
-    Returns ``{qualified_name: CallableInfo}``.  Nested functions are keyed
-    by their enclosing class (e.g. ``MyClass.my_method``) but **not** by
-    enclosing functions to keep the key space manageable.
+    Returns ``{qualified_name: CallableInfo}``.  Nested functions and class
+    methods use Python-style lexical ``__qualname__`` strings, including
+    ``.<locals>.`` separators for function scopes.
 
     Possible errors:
 
@@ -281,14 +281,24 @@ def extract_callables_from_ast(
     lines = source.splitlines()
     callables: dict[str, CallableInfo] = {}
 
-    def _visit(node: ast.AST, class_name: str | None = None) -> None:
+    def _assemble_qualified_name(
+        stack: list[tuple[str, str]],
+        leaf_name: str,
+    ) -> str:
+        parts: list[str] = []
+        for kind, name in stack:
+            parts.append(name)
+            if kind == "func":
+                parts.append("<locals>")
+        parts.append(leaf_name)
+        return ".".join(parts)
+
+    def _visit(node: ast.AST, stack: list[tuple[str, str]]) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.ClassDef):
-                _visit(child, class_name=child.name)
+                _visit(child, stack + [("class", child.name)])
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                qualified = (
-                    f"{class_name}.{child.name}" if class_name else child.name
-                )
+                qualified = _assemble_qualified_name(stack, child.name)
                 start = child.lineno
                 end = child.end_lineno or child.lineno
                 snippet = "\n".join(lines[start - 1 : end])
@@ -300,9 +310,11 @@ def extract_callables_from_ast(
                     end_line=end,
                     source=snippet,
                 )
-                _visit(child, class_name=class_name)
+                _visit(child, stack + [("func", child.name)])
+            else:
+                _visit(child, stack)
 
-    _visit(tree)
+    _visit(tree, [])
     return callables
 
 
@@ -332,11 +344,48 @@ def find_modified_callables_from_sources(
     """
     old_callables = extract_callables_from_ast(old_source, file_path)
     new_callables = extract_callables_from_ast(new_source, file_path)
+    old_lines = old_source.splitlines()
+    new_lines = new_source.splitlines()
+
+    def _nested_children(
+        info: CallableInfo,
+        callables: dict[str, CallableInfo],
+    ) -> list[CallableInfo]:
+        return [
+            child
+            for child in callables.values()
+            if info.start_line < child.start_line
+            and child.end_line <= info.end_line
+        ]
+
+    def _own_source(
+        info: CallableInfo,
+        children: list[CallableInfo],
+        lines: list[str],
+    ) -> str:
+        own_lines = set(range(info.start_line, info.end_line + 1))
+        for child in children:
+            own_lines.difference_update(range(child.start_line, child.end_line + 1))
+        return "\n".join(
+            lines[i - 1] for i in sorted(own_lines) if 1 <= i <= len(lines)
+        )
 
     modified: list[dict] = []
     for qname, old_info in old_callables.items():
         new_info = new_callables.get(qname)
-        if new_info is not None and old_info.source != new_info.source:
+        if new_info is None:
+            continue
+        old_own_source = _own_source(
+            old_info,
+            _nested_children(old_info, old_callables),
+            old_lines,
+        )
+        new_own_source = _own_source(
+            new_info,
+            _nested_children(new_info, new_callables),
+            new_lines,
+        )
+        if old_own_source != new_own_source:
             modified.append(old_info.to_dict())
     return modified
 
@@ -422,9 +471,9 @@ def generate_tracer_module(repo_path: str, alt_path: str = "") -> str:
 
     return textwrap.dedent(f"""\
         import json
-        import os
+        import linecache
+        import sys
         import threading
-        import traceback
 
         _lock = threading.Lock()
         _seen = set()
@@ -432,22 +481,56 @@ def generate_tracer_module(repo_path: str, alt_path: str = "") -> str:
         _PATH_PREFIXES = {prefixes_tuple}
         _TRACE_FILE = "/tmp/_swe_fault_traces.jsonl"
 
+        def _resolve_qualname(frame):
+            code = frame.f_code
+            self_obj = frame.f_locals.get("self")
+            if self_obj is not None:
+                return type(self_obj).__qualname__ + "." + code.co_name
+            cls_obj = frame.f_locals.get("cls")
+            if cls_obj is not None:
+                cls = cls_obj if isinstance(cls_obj, type) else type(cls_obj)
+                return cls.__qualname__ + "." + code.co_name
+
+            # Static methods have no self/cls in Python 3.10 frames, so this
+            # fallback intentionally records the bare function name for them.
+            parts = []
+            current = frame
+            while current is not None and current.f_code.co_name != "<module>":
+                parts.append(current.f_code.co_name)
+                current = current.f_back
+            parts.reverse()
+            if not parts:
+                return "<unknown>"
+            return ".<locals>.".join(parts)
+
         def trace(callable_name, file_path, def_lineno):
             try:
-                frames = traceback.extract_stack()[:-1]
-                # Filter to repo-internal frames (includes alt_path for
-                # symlinked test dirs like r2e_tests/)
+                frames = []
+                frame = sys._getframe(1)
+                while frame is not None:
+                    frames.append(frame)
+                    frame = frame.f_back
+
                 repo_frames = [
                     f for f in frames
-                    if any(f.filename.startswith(p) for p in _PATH_PREFIXES)
-                    and "/.venv/" not in f.filename
-                    and "/site-packages/" not in f.filename
+                    if any(f.f_code.co_filename.startswith(p) for p in _PATH_PREFIXES)
+                    and "/.venv/" not in f.f_code.co_filename
+                    and "/site-packages/" not in f.f_code.co_filename
                 ]
                 if not repo_frames:
                     return
-                # Build dedup key from frame signatures
+
+                frame_entries = [
+                    {{
+                        "file": f.f_code.co_filename,
+                        "line": f.f_lineno,
+                        "name": _resolve_qualname(f),
+                        "code": linecache.getline(f.f_code.co_filename, f.f_lineno).strip(),
+                    }}
+                    for f in repo_frames
+                ]
                 key = (callable_name, file_path, def_lineno,
-                       tuple((f.filename, f.lineno, f.name) for f in repo_frames))
+                       tuple((f["file"], f["line"], f["name"]) for f in frame_entries))
                 with _lock:
                     if key in _seen:
                         return
@@ -456,10 +539,7 @@ def generate_tracer_module(repo_path: str, alt_path: str = "") -> str:
                         "callable": callable_name,
                         "file": file_path,
                         "lineno": def_lineno,
-                        "frames": [
-                            {{"file": f.filename, "line": f.lineno, "name": f.name, "code": f.line or ""}}
-                            for f in repo_frames
-                        ],
+                        "frames": frame_entries,
                     }}
                     with open(_TRACE_FILE, "a") as fh:
                         fh.write(json.dumps(entry) + "\\n")
@@ -1197,10 +1277,9 @@ def parse_fault_traces_from_file(
             is_patched = False
             qualified = frame_func
             if rel_path in patched_ranges:
-                for start, end, qname in patched_ranges[rel_path]:
+                for start, end, _qname in patched_ranges[rel_path]:
                     if start <= frame_lineno <= end:
                         is_patched = True
-                        qualified = qname
                         break
 
             frames.append({
