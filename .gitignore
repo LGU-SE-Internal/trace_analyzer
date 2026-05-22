@@ -215,3 +215,8 @@ uv.lock
 
 # Legacy issue: we will ignore the "verl" folder, which was installed by many as submodule before
 /verl/
+# Local dev scratchpads (user-specific, do not commit)
+main.sh
+main2.sh
+review.md
+keyboard-workflow-cheatsheet.md
