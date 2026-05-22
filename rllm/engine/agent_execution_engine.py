@@ -2,7 +2,6 @@ import asyncio
 import logging
 import re
 import time
-import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -595,7 +594,7 @@ class AgentExecutionEngine:
         base_with_gen = self.chat_parser.parse(BASE_MSGS, add_generation_prompt=True, is_first_msg=True)
         self._tito_base_msgs = BASE_MSGS
         self._tito_base_no_gen_len = len(self.tokenizer.encode(base_no_gen, add_special_tokens=False))
-        self._tito_gen_prompt_ids: list[int] = self.tokenizer.encode(base_with_gen, add_special_tokens=False)[self._tito_base_no_gen_len:]
+        self._tito_gen_prompt_ids: list[int] = self.tokenizer.encode(base_with_gen, add_special_tokens=False)[self._tito_base_no_gen_len :]
         self._tito_anchors_ready = True
 
     def _delta_encode_env_message(self, observation: str) -> list[int]:
@@ -611,7 +610,7 @@ class AgentExecutionEngine:
             is_first_msg=True,
         )
         full_ids = self.tokenizer.encode(full_str, add_special_tokens=False)
-        return full_ids[self._tito_base_no_gen_len:]
+        return full_ids[self._tito_base_no_gen_len :]
 
     async def _run_trajectory_tito(self, idx, application_id, seed=0, **kwargs):
         """Token-in-token-out trajectory execution.
@@ -647,17 +646,16 @@ class AgentExecutionEngine:
         # ── Initial prompt: encode once ──
         initial_messages = agent.chat_completions.copy()
         initial_prompt_str = self.chat_parser.parse(
-            initial_messages, add_generation_prompt=True, is_first_msg=True,
+            initial_messages,
+            add_generation_prompt=True,
+            is_first_msg=True,
         )
         accumulated_ids: list[int] = self.tokenizer.encode(initial_prompt_str, add_special_tokens=False)
         prompt_len = len(accumulated_ids)
 
         if prompt_len > self.max_prompt_length:
             agent.reset()
-            raise Exception(
-                f"Trajectory {idx}: initial prompt length {prompt_len} "
-                f"exceeded max_prompt_length {self.max_prompt_length}, retrying"
-            )
+            raise Exception(f"Trajectory {idx}: initial prompt length {prompt_len} exceeded max_prompt_length {self.max_prompt_length}, retrying")
 
         # response_* track everything AFTER the initial prompt
         response_ids: list[int] = []
@@ -701,9 +699,7 @@ class AgentExecutionEngine:
             logprobs: list[float] = token_output.log_probs
 
             # Enforce max_tokens
-            finish_reason = "stop"
             if len(completion_ids) >= max_tokens:
-                finish_reason = "length"
                 completion_ids = completion_ids[:max_tokens]
                 logprobs = logprobs[:max_tokens] if logprobs else []
 
@@ -715,13 +711,15 @@ class AgentExecutionEngine:
             completion_text = self.tokenizer.decode(completion_ids, skip_special_tokens=True)
 
             # Record episode step (compatible with assemble_steps format)
-            episode_steps.append({
-                "prompt_ids": list(accumulated_ids),
-                "completion_ids": list(completion_ids),
-                "logprobs": logprobs,
-                "prompt": "",  # not used in tito mode
-                "response": completion_text,
-            })
+            episode_steps.append(
+                {
+                    "prompt_ids": list(accumulated_ids),
+                    "completion_ids": list(completion_ids),
+                    "logprobs": logprobs,
+                    "prompt": "",  # not used in tito mode
+                    "response": completion_text,
+                }
+            )
 
             # ── Accumulate completion tokens (token-in-token-out core) ──
             accumulated_ids = accumulated_ids + list(completion_ids)
@@ -746,8 +744,8 @@ class AgentExecutionEngine:
                 termination_reason = "ENV_TIMEOUT"
                 if step_idx == 0:
                     colorful_print(
-                        f"Warning: Trajectory {idx} completed due to: {termination_reason} "
-                        f"before able to perform 1 complete action.\n", "red",
+                        f"Warning: Trajectory {idx} completed due to: {termination_reason} before able to perform 1 complete action.\n",
+                        "red",
                     )
                 reward = 0
                 cur_step = agent.get_current_state()
@@ -763,7 +761,10 @@ class AgentExecutionEngine:
 
             # Update agent internal state
             agent.update_from_env(
-                observation=next_observation, reward=reward, done=done, info=info,
+                observation=next_observation,
+                reward=reward,
+                done=done,
+                info=info,
             )
 
             cur_step = agent.get_current_state()
@@ -899,7 +900,7 @@ class AgentExecutionEngine:
                 # This ensures pods are deleted even when exceptions occur
                 try:
                     env = self.envs[idx]
-                    if env is not None and hasattr(env, 'close'):
+                    if env is not None and hasattr(env, "close"):
                         await loop.run_in_executor(self.executor, env.close)
                         colorful_print(f"Trajectory {idx}: Cleaned up environment after exception", "yellow")
                 except Exception as cleanup_error:

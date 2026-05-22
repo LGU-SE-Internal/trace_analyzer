@@ -60,11 +60,8 @@ def apply_repo_fixups(env, docker_image: str) -> None:
         if repo_key in image_lower:
             for cmd, timeout in commands:
                 timeout = timeout or _INSTALL_TIMEOUT
-                stdout, stderr, exit_code = env._execute_raw(
-                    cmd, timeout=timeout
-                )
+                stdout, stderr, exit_code = env._execute_raw(cmd, timeout=timeout)
                 if exit_code != 0:
                     detail = (stderr or stdout or "")[:200]
-                    print(f"[install_utils] WARN: '{cmd[:80]}' failed "
-                          f"(exit={exit_code}): {detail}")
+                    print(f"[install_utils] WARN: '{cmd[:80]}' failed (exit={exit_code}): {detail}")
             break

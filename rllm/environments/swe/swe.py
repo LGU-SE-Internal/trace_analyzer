@@ -4,13 +4,12 @@ import os
 import re
 
 import numpy as np
+from arl import ManagedSession
 from datasets import Dataset, load_dataset
 
-from arl import ManagedSession
-
+from rllm.environments.base.base_env import BaseEnv
 from rllm.environments.swe.action import Action
 from rllm.environments.swe.reward import calculate_reward
-from rllm.environments.base.base_env import BaseEnv
 
 TOOLS_DIR = os.path.join(os.path.dirname(__file__), "tools")
 CONTINUE_MSG = """
@@ -26,10 +25,7 @@ CMD_TIMEOUT = 120  # seconds
 # correct conda env or repo venv during setup_env) is first on PATH, so that
 # ``python``, ``pip``, and all project CLI tools resolve to the right env
 # without requiring ``conda activate``.
-DOCKER_PATH = (
-    "/root/.venv/bin:/root/.local/bin:/root/.cargo/bin"
-    ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-)
+DOCKER_PATH = "/root/.venv/bin:/root/.local/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 SKIP_FILES_NEW = ["run_tests.sh", "r2e_tests"]
 
@@ -71,16 +67,8 @@ def format_observation(output: str, error_code: str, action_name: str) -> str:
             top = "\n".join(lines[:_TRUNCATION_LINES])
             bottom = "\n".join(lines[-_TRUNCATION_LINES:])
             divider = "-" * 50
-            output = (
-                f"{top}\n"
-                f"{divider}\n"
-                f"<Observation truncated in middle for saving context>\n"
-                f"{divider}\n"
-                f"{bottom}"
-            )
-        return (
-            f"Exit code: {error_code}\nExecution output of [{action_name}]:\n{output}"
-        )
+            output = f"{top}\n{divider}\n<Observation truncated in middle for saving context>\n{divider}\n{bottom}"
+        return f"Exit code: {error_code}\nExecution output of [{action_name}]:\n{output}"
 
     return f"Execution output of [{action_name}]:\n{output}"
 
@@ -90,9 +78,7 @@ def _mirror_image(docker_image: str) -> str:
 
     Set ARL_MIRROR_REGISTRY="" to disable mirroring and use original images.
     """
-    registry = os.environ.get(
-        "ARL_MIRROR_REGISTRY", "pair-diag-cn-guangzhou.cr.volces.com"
-    )
+    registry = os.environ.get("ARL_MIRROR_REGISTRY", "pair-diag-cn-guangzhou.cr.volces.com")
     if not registry:
         return docker_image
     namespace = os.environ.get("ARL_MIRROR_NAMESPACE", "code")
@@ -135,22 +121,16 @@ class SWEEnv(BaseEnv):
 
         self.step_timeout = step_timeout
         self.reward_timeout = reward_timeout
-        self.gateway_url = gateway_url or os.environ.get(
-            "ARL_GATEWAY_URL", "http://localhost:8080"
-        )
+        self.gateway_url = gateway_url or os.environ.get("ARL_GATEWAY_URL", "http://localhost:8080")
         self.namespace = namespace
-        self.experiment_id = experiment_id or os.environ.get(
-            "ARL_EXPERIMENT_ID", "default"
-        )
+        self.experiment_id = experiment_id or os.environ.get("ARL_EXPERIMENT_ID", "default")
         self.max_replicas = max_replicas
         self.total_steps = 0
         self.verbose = verbose
         self.scaffold = scaffold
         self.normalize_pytest = normalize_pytest
         self._cmd_counter = 0
-        assert scaffold in ["r2egym", "sweagent"], (
-            f"Invalid scaffold: {scaffold}, must be one of ['r2egym', 'sweagent']"
-        )
+        assert scaffold in ["r2egym", "sweagent"], f"Invalid scaffold: {scaffold}, must be one of ['r2egym', 'sweagent']"
 
         # ARL session (created in reset)
         self.session: ManagedSession | None = None
@@ -163,9 +143,7 @@ class SWEEnv(BaseEnv):
         self.repo_path = "/testbed"
         self.alt_path = "/" if self.swebench_verified else "/root"
 
-    def _execute_raw(
-        self, cmd: str, timeout: int = CMD_TIMEOUT, workdir: str | None = None
-    ) -> tuple[str, str, int]:
+    def _execute_raw(self, cmd: str, timeout: int = CMD_TIMEOUT, workdir: str | None = None) -> tuple[str, str, int]:
         """Execute a command and return raw (stdout, stderr, exit_code).
 
         Low-level method that returns stdout/stderr separately so callers
@@ -194,11 +172,7 @@ class SWEEnv(BaseEnv):
 
         if self.swebench_verified:
             # SWE-bench: conda activate (matches swebench harness eval scripts)
-            shell_cmd = (
-                f"source /opt/miniconda3/bin/activate && "
-                f"conda activate testbed && "
-                f"{cmd}"
-            )
+            shell_cmd = f"source /opt/miniconda3/bin/activate && conda activate testbed && {cmd}"
             step = {
                 "name": f"cmd_{self._cmd_counter}",
                 "command": ["bash", "-c", shell_cmd],
@@ -221,9 +195,7 @@ class SWEEnv(BaseEnv):
         stderr = re.sub(r"\x1b\[[0-9;]*m|\r", "", result.output.stderr or "")
         return stdout, stderr, result.output.exit_code
 
-    def _run(
-        self, cmd: str, timeout: int = CMD_TIMEOUT, workdir: str | None = None
-    ) -> tuple[str, str]:
+    def _run(self, cmd: str, timeout: int = CMD_TIMEOUT, workdir: str | None = None) -> tuple[str, str]:
         """Execute a shell command in the sandbox session.
 
         Returns (output, error_code_str) matching the previous DockerRuntime interface.
@@ -248,9 +220,7 @@ class SWEEnv(BaseEnv):
         # Split into chunks to avoid shell argument length limits
         chunk_size = 65536
         if len(b64) <= chunk_size:
-            self._run(
-                f"mkdir -p {dir_path} && printf '%s' '{b64}' | base64 -d > {dest_path}"
-            )
+            self._run(f"mkdir -p {dir_path} && printf '%s' '{b64}' | base64 -d > {dest_path}")
         else:
             self._run(f"mkdir -p {dir_path} && : > {dest_path}")
             for i in range(0, len(b64), chunk_size):
@@ -265,16 +235,9 @@ class SWEEnv(BaseEnv):
             self._run("/root/.venv/bin/python -m pip install chardet")
         else:
             self._run(f"ln -sf {self.repo_path}/.venv {self.alt_path}/.venv")
-            self._run(
-                f"ln -sf {self.repo_path}/.venv/bin/python {self.alt_path}/.local/bin/python"
-            )
-            self._run(
-                f"ln -sf {self.repo_path}/.venv/bin/python {self.alt_path}/.local/bin/python3"
-            )
-            self._run(
-                f"find {self.repo_path}/.venv/bin -type f -executable "
-                f"-exec ln -sf {{}} {self.alt_path}/.local/bin/ \\;"
-            )
+            self._run(f"ln -sf {self.repo_path}/.venv/bin/python {self.alt_path}/.local/bin/python")
+            self._run(f"ln -sf {self.repo_path}/.venv/bin/python {self.alt_path}/.local/bin/python3")
+            self._run(f"find {self.repo_path}/.venv/bin -type f -executable -exec ln -sf {{}} {self.alt_path}/.local/bin/ \\;")
             self._run("uv pip install chardet")
             self._run("find . -name '*.pyc' -delete")
             self._run("find . -name '__pycache__' -exec rm -rf {} +")
@@ -283,31 +246,17 @@ class SWEEnv(BaseEnv):
             for skip_file in SKIP_FILES_NEW:
                 if skip_file == "r2e_tests":
                     continue
-                self._run(
-                    f"mv {self.repo_path}/{skip_file} {self.alt_path}/{skip_file}"
-                )
+                self._run(f"mv {self.repo_path}/{skip_file} {self.alt_path}/{skip_file}")
             # Move r2e_tests to alt_path and symlink back.
             # Some images have r2e_tests at /r2e_tests, others at /testbed/r2e_tests.
-            self._run(
-                f"if [ -d /r2e_tests ] && [ ! -d {self.alt_path}/r2e_tests ]; then "
-                f"  mv /r2e_tests {self.alt_path}/r2e_tests; "
-                f"fi"
-            )
-            self._run(
-                f"if [ -d {self.repo_path}/r2e_tests ] && [ ! -L {self.repo_path}/r2e_tests ] "
-                f"   && [ ! -d {self.alt_path}/r2e_tests ]; then "
-                f"  mv {self.repo_path}/r2e_tests {self.alt_path}/r2e_tests; "
-                f"fi"
-            )
+            self._run(f"if [ -d /r2e_tests ] && [ ! -d {self.alt_path}/r2e_tests ]; then   mv /r2e_tests {self.alt_path}/r2e_tests; fi")
+            self._run(f"if [ -d {self.repo_path}/r2e_tests ] && [ ! -L {self.repo_path}/r2e_tests ]    && [ ! -d {self.alt_path}/r2e_tests ]; then   mv {self.repo_path}/r2e_tests {self.alt_path}/r2e_tests; fi")
             # Ensure symlink from repo_path → alt_path (if not already there)
-            self._run(
-                f"if [ -d {self.alt_path}/r2e_tests ] && [ ! -e {self.repo_path}/r2e_tests ]; then "
-                f"  ln -s {self.alt_path}/r2e_tests {self.repo_path}/r2e_tests; "
-                f"fi"
-            )
+            self._run(f"if [ -d {self.alt_path}/r2e_tests ] && [ ! -e {self.repo_path}/r2e_tests ]; then   ln -s {self.alt_path}/r2e_tests {self.repo_path}/r2e_tests; fi")
 
         # Per-repo dependency fixups (mirrors R2E-Gym install_utils)
         from rllm.environments.swe.install_utils import apply_repo_fixups
+
         docker_image = self.entry.get("docker_image", self.entry.get("image_name", ""))
         apply_repo_fixups(self, docker_image)
 
@@ -373,9 +322,7 @@ class SWEEnv(BaseEnv):
         self._create_session()
         self._setup_env()
 
-        tool_files = (
-            R2EGYM_TOOL_FILES if self.scaffold == "r2egym" else SWEAGENT_TOOL_FILES
-        )
+        tool_files = R2EGYM_TOOL_FILES if self.scaffold == "r2egym" else SWEAGENT_TOOL_FILES
         self._provision_tools(tool_files)
         if self.normalize_pytest:
             self._patch_pytest_args()
@@ -404,36 +351,21 @@ class SWEEnv(BaseEnv):
             # Run the command directly in the sandbox.
             # Output is formatted with [STDOUT]/[STDERR] headers to match
             # the old execute_bash tool script's output format.
-            cmd = action_obj.parameters.get("command") or action_obj.parameters.get(
-                "cmd", ""
-            )
+            cmd = action_obj.parameters.get("command") or action_obj.parameters.get("cmd", "")
             first_token = cmd.strip().split()[0] if cmd.strip() else ""
             if first_token in BLOCKED_COMMANDS:
-                output = (
-                    f"Bash command '{first_token}' is not allowed. "
-                    "Please use a different command or tool."
-                )
+                output = f"Bash command '{first_token}' is not allowed. Please use a different command or tool."
                 error_code = "Error: Exit code 1"
             else:
-                stdout, stderr, exit_code = self._execute_raw(
-                    cmd, timeout=self.step_timeout
-                )
+                stdout, stderr, exit_code = self._execute_raw(cmd, timeout=self.step_timeout)
                 if exit_code == 124:
-                    output = (
-                        f"The command took too long to execute (>{self.step_timeout}s)"
-                    )
+                    output = f"The command took too long to execute (>{self.step_timeout}s)"
                     error_code = "-1"
                 elif exit_code != 0:
-                    output = (
-                        f"Error executing command:\n\n"
-                        f"[STDOUT]\n\n{stdout.strip()}\n\n"
-                        f"[STDERR]\n\n{stderr.strip()}"
-                    )
+                    output = f"Error executing command:\n\n[STDOUT]\n\n{stdout.strip()}\n\n[STDERR]\n\n{stderr.strip()}"
                     error_code = f"Error: Exit code {exit_code}"
                 else:
-                    output = (
-                        f"[STDOUT]\n\n{stdout.strip()}\n\n[STDERR]\n\n{stderr.strip()}"
-                    )
+                    output = f"[STDOUT]\n\n{stdout.strip()}\n\n[STDERR]\n\n{stderr.strip()}"
                     error_code = str(exit_code)
         else:
             # file_editor, search, str_replace_editor — run the tool binary.

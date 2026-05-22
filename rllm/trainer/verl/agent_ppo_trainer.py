@@ -60,13 +60,14 @@ class AgentPPOTrainer(RayPPOTrainer):
             print("Using trajectory-level advantage, max_prompt_length and max_response_length will be applied episode-wise")
 
         # P2A initialization
-        self.p2a_enabled = getattr(self.config.rllm, 'p2a', None) and self.config.rllm.p2a.enable
+        self.p2a_enabled = getattr(self.config.rllm, "p2a", None) and self.config.rllm.p2a.enable
         if self.p2a_enabled:
             from rllm.trainer.verl.p2a import BonusMapStore
+
             assert self.config.rllm.p2a.bonus_map_dir, "P2A requires bonus_map_dir to be set"
             self.bonus_map_store = BonusMapStore(self.config.rllm.p2a.bonus_map_dir)
             self.p2a_m_max = self.config.rllm.p2a.m_max
-            self.p2a_tracking_mode = getattr(self.config.rllm.p2a, 'tracking_mode', 'view_only')
+            self.p2a_tracking_mode = getattr(self.config.rllm.p2a, "tracking_mode", "view_only")
             self._p2a_step_distances = {}
             print(f"P2A enabled: m_max={self.p2a_m_max}, tracking_mode={self.p2a_tracking_mode}, bonus_map_dir={self.config.rllm.p2a.bonus_map_dir}")
 
@@ -192,11 +193,9 @@ class AgentPPOTrainer(RayPPOTrainer):
                     # P2A: store idx→instance_id mapping for this batch
                     if self.p2a_enabled:
                         from rllm.environments.swe.trace import make_instance_id
+
                         envs = self.agent_execution_engine.envs
-                        self._p2a_idx_to_instance_id = {
-                            i: make_instance_id(getattr(env, 'entry', {})) if hasattr(env, 'entry') else ""
-                            for i, env in enumerate(envs)
-                        }
+                        self._p2a_idx_to_instance_id = {i: make_instance_id(getattr(env, "entry", {})) if hasattr(env, "entry") else "" for i, env in enumerate(envs)}
                     if self.config.rllm.stepwise_advantage.enable:
                         final_gen_batch_output = self.generate_agent_steps(timing_raw=timing_raw, meta_info=batch.meta_info, uids=batch.non_tensor_batch["uid"])
                         repeat_counts = final_gen_batch_output.meta_info["repeat_counts"]
@@ -425,7 +424,7 @@ class AgentPPOTrainer(RayPPOTrainer):
                         # P2A: per-step advantage reshaping (independent of stepwise_advantage)
                         if self.p2a_enabled:
                             p2a_metrics = self._apply_p2a_reshaping(batch, self._p2a_step_distances)
-                            if not hasattr(self, '_p2a_metrics'):
+                            if not hasattr(self, "_p2a_metrics"):
                                 self._p2a_metrics = {}
                             self._p2a_metrics.update(p2a_metrics)
 
@@ -472,7 +471,7 @@ class AgentPPOTrainer(RayPPOTrainer):
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
 
                 # P2A metrics
-                if self.p2a_enabled and hasattr(self, '_p2a_metrics'):
+                if self.p2a_enabled and hasattr(self, "_p2a_metrics"):
                     metrics.update(self._p2a_metrics)
                     self._p2a_metrics = {}
 
@@ -1030,7 +1029,7 @@ class AgentPPOTrainer(RayPPOTrainer):
 
         Returns a dict mapping step_id -> normalized distance (or -1.0 if off-graph).
         """
-        from rllm.trainer.verl.p2a import parse_read_actions, match_reads_to_callgraph
+        from rllm.trainer.verl.p2a import match_reads_to_callgraph, parse_read_actions
 
         tracking_mode = self.p2a_tracking_mode
         distances = {}
@@ -1074,13 +1073,9 @@ class AgentPPOTrainer(RayPPOTrainer):
         # Store localization metrics
         self._p2a_localization_metrics = {}
         if episodes_total > 0:
-            self._p2a_localization_metrics["p2a_loc/root_cause_coverage"] = (
-                episodes_with_root_cause_hit / episodes_total
-            )
+            self._p2a_localization_metrics["p2a_loc/root_cause_coverage"] = episodes_with_root_cause_hit / episodes_total
         if total_view_steps > 0:
-            self._p2a_localization_metrics["p2a_loc/on_graph_view_density"] = (
-                len(on_graph_distances) / total_view_steps
-            )
+            self._p2a_localization_metrics["p2a_loc/on_graph_view_density"] = len(on_graph_distances) / total_view_steps
             self._p2a_localization_metrics["p2a_loc/total_view_steps"] = total_view_steps
         if steps_to_root_cause_list:
             arr = np.array(steps_to_root_cause_list)
@@ -1196,7 +1191,7 @@ class AgentPPOTrainer(RayPPOTrainer):
             metrics["p2a/adv_off_graph_std"] = float(off.std())
 
         # Merge localization metrics
-        if hasattr(self, '_p2a_localization_metrics'):
+        if hasattr(self, "_p2a_localization_metrics"):
             metrics.update(self._p2a_localization_metrics)
 
         return metrics

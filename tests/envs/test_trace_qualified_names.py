@@ -7,7 +7,6 @@ import textwrap
 import types
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRACE_PATH = REPO_ROOT / "rllm" / "environments" / "swe" / "trace.py"
 
@@ -131,9 +130,7 @@ class TestF4_StaticSide:
 
         modified = find_modified_callables_from_sources(old_source, new_source, "m.py")
 
-        assert [item["qualified_name"] for item in modified] == [
-            "a.<locals>.inner"
-        ]
+        assert [item["qualified_name"] for item in modified] == ["a.<locals>.inner"]
 
     def test_nested_class_method_uses_class_path(self):
         source = _clean(
@@ -203,10 +200,7 @@ class TestF4_StaticSide:
         )
 
         callables = extract_callables_from_ast(source, "m.py")
-        node_keys = [
-            f"{info.file_path}::{info.qualified_name}"
-            for info in callables.values()
-        ]
+        node_keys = [f"{info.file_path}::{info.qualified_name}" for info in callables.values()]
 
         assert len(node_keys) == len(set(node_keys))
         assert {"m.py::A.handle", "m.py::B.handle"} <= set(node_keys)
@@ -377,10 +371,7 @@ class TestCrossInvariant:
         )
         try:
             callables = extract_callables_from_ast(source, str(path))
-            node_keys = {
-                f"{info.file_path}::{info.qualified_name}"
-                for info in callables.values()
-            }
+            node_keys = {f"{info.file_path}::{info.qualified_name}" for info in callables.values()}
 
             module.A().handle()
             runtime_name = tracer._resolve_qualname(module.CAPTURED["frame"])
@@ -413,10 +404,7 @@ class TestCrossInvariant:
         )
         try:
             callables = extract_callables_from_ast(source, str(path))
-            node_keys = {
-                f"{info.file_path}::{info.qualified_name}"
-                for info in callables.values()
-            }
+            node_keys = {f"{info.file_path}::{info.qualified_name}" for info in callables.values()}
 
             assert module.outer is not None
             runtime_name = tracer._resolve_qualname(module.CAPTURED["frame"])

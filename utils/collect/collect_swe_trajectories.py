@@ -55,7 +55,6 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-import openai
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -64,6 +63,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Task loading
 # ---------------------------------------------------------------------------
+
 
 def load_tasks(data_path: str) -> list[dict]:
     """Load and normalise tasks from a parquet / json / jsonl file."""
@@ -88,6 +88,7 @@ def load_tasks(data_path: str) -> list[dict]:
 # Trajectory record — a (messages, termination_reason) pair
 # ---------------------------------------------------------------------------
 
+
 def _rec(messages: list[dict], reason: str, instance_id: str = "") -> dict:
     return {"messages": messages, "termination_reason": reason, "instance_id": instance_id}
 
@@ -95,6 +96,7 @@ def _rec(messages: list[dict], reason: str, instance_id: str = "") -> dict:
 # ---------------------------------------------------------------------------
 # Rejection-mode checkpoint helpers
 # ---------------------------------------------------------------------------
+
 
 def load_rejection_checkpoint(output_path: str) -> list[dict]:
     """Return previously collected trajectory records from output parquet."""
@@ -107,7 +109,7 @@ def load_rejection_checkpoint(output_path: str) -> list[dict]:
             msgs = row["messages"]
             if hasattr(msgs, "tolist"):
                 msgs = [dict(m) for m in msgs.tolist()]
-            elif isinstance(msgs, (list, tuple)):
+            elif isinstance(msgs, list | tuple):
                 msgs = [dict(m) for m in msgs]
             reason = row.get("termination_reason", "UNKNOWN") if "termination_reason" in df.columns else "UNKNOWN"
             iid = row.get("instance_id", "") if "instance_id" in df.columns else ""
@@ -131,6 +133,7 @@ def save_rejection_checkpoint(collected: list[dict], output_path: str) -> None:
 # ---------------------------------------------------------------------------
 # DPO-mode checkpoint helpers
 # ---------------------------------------------------------------------------
+
 
 def _dpo_sidecar(output_path: str, kind: str) -> str:
     """Return path of the DPO sidecar JSONL file (kind = 'pos' or 'neg')."""
@@ -173,16 +176,22 @@ def _append_to_jsonl(path: str, instance_id: str, record: dict) -> None:
     """Append one record to a JSONL sidecar file (append-only)."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "a") as fh:
-        fh.write(json.dumps({
-            "instance_id": instance_id,
-            "messages": record["messages"],
-            "termination_reason": record["termination_reason"],
-        }) + "\n")
+        fh.write(
+            json.dumps(
+                {
+                    "instance_id": instance_id,
+                    "messages": record["messages"],
+                    "termination_reason": record["termination_reason"],
+                }
+            )
+            + "\n"
+        )
 
 
 # ---------------------------------------------------------------------------
 # DPO pairing & final parquet
 # ---------------------------------------------------------------------------
+
 
 def pair_dpo_data(
     pos_cache: dict[str, list[dict]],
@@ -201,13 +210,15 @@ def pair_dpo_data(
             continue  # no negative to pair with
         for i, chosen_rec in enumerate(pos_list):
             rejected_rec = neg_list[i % len(neg_list)]
-            pairs.append({
-                "instance_id": iid,
-                "chosen": chosen_rec["messages"],
-                "rejected": rejected_rec["messages"],
-                "chosen_termination_reason": chosen_rec["termination_reason"],
-                "rejected_termination_reason": rejected_rec["termination_reason"],
-            })
+            pairs.append(
+                {
+                    "instance_id": iid,
+                    "chosen": chosen_rec["messages"],
+                    "rejected": rejected_rec["messages"],
+                    "chosen_termination_reason": chosen_rec["termination_reason"],
+                    "rejected_termination_reason": rejected_rec["termination_reason"],
+                }
+            )
     return pairs
 
 
@@ -236,6 +247,7 @@ def save_dpo_parquet(pairs: list[dict], output_path: str) -> None:
 #   Mirrors the trainer's approach (agent_ppo_trainer.generate_agent_trajectories_async):
 #   we use a semaphore-guarded producer that feeds new tasks as soon as slots free
 #   up, avoiding the "tail effect" of batch-based execute_tasks().
+
 
 async def sample_loop(tasks: list[dict], args: argparse.Namespace) -> None:
     from concurrent.futures import ThreadPoolExecutor
@@ -350,13 +362,7 @@ async def sample_loop(tasks: list[dict], args: argparse.Namespace) -> None:
     neg_sidecar = _dpo_sidecar(args.output, "neg") if is_dpo else ""
 
     mode_label = "DPO" if is_dpo else "Rejection"
-    print(
-        f"{mode_label} sampling: target={args.target} passes, n_parallel={args.n_parallel}\n"
-        f"  model={args.model}  scaffold={args.scaffold}  max_steps={args.max_steps}\n"
-        f"  max_response_length={args.max_response_length}  max_prompt_length={args.max_prompt_length}  T={args.temperature}\n"
-        f"  trajectory_timeout={args.trajectory_timeout}s  disable_thinking={args.disable_thinking}\n"
-        + (f"  DPO negatives already cached: {n_neg_total}\n" if is_dpo else "")
-    )
+    print(f"{mode_label} sampling: target={args.target} passes, n_parallel={args.n_parallel}\n  model={args.model}  scaffold={args.scaffold}  max_steps={args.max_steps}\n  max_response_length={args.max_response_length}  max_prompt_length={args.max_prompt_length}  T={args.temperature}\n  trajectory_timeout={args.trajectory_timeout}s  disable_thinking={args.disable_thinking}\n" + (f"  DPO negatives already cached: {n_neg_total}\n" if is_dpo else ""))
 
     # ------------------------------------------------------------------
     # Semaphore-based streaming loop (mirrors trainer's approach)
@@ -402,10 +408,7 @@ async def sample_loop(tasks: list[dict], args: argparse.Namespace) -> None:
                 pos_cache.setdefault(iid, []).append(rec)
                 _append_to_jsonl(pos_sidecar, iid, rec)
                 n_pass += 1
-                print(
-                    f"[PASS {reason}] {iid} | pos={n_pass}/{args.target}"
-                    f" neg={n_neg_total} attempts={n_attempts} | {timing_str}"
-                )
+                print(f"[PASS {reason}] {iid} | pos={n_pass}/{args.target} neg={n_neg_total} attempts={n_attempts} | {timing_str}")
                 if n_pass >= args.target:
                     done_event.set()
             else:
@@ -413,17 +416,12 @@ async def sample_loop(tasks: list[dict], args: argparse.Namespace) -> None:
                 _append_to_jsonl(neg_sidecar, iid, rec)
                 n_neg_total += 1
                 n_fail += 1
-                print(
-                    f"[FAIL {reason}] {iid} | pos={n_pass} neg={n_neg_total} | {timing_str}"
-                )
+                print(f"[FAIL {reason}] {iid} | pos={n_pass} neg={n_neg_total} | {timing_str}")
         else:
             if passed:
                 collected.append(rec)
                 n_pass += 1
-                print(
-                    f"[PASS {reason}] {iid} | pass={n_pass}/{args.target}"
-                    f" fail={n_fail} attempts={n_attempts} | {timing_str}"
-                )
+                print(f"[PASS {reason}] {iid} | pass={n_pass}/{args.target} fail={n_fail} attempts={n_attempts} | {timing_str}")
                 if n_pass - last_checkpoint_pass >= args.checkpoint_interval:
                     save_rejection_checkpoint(collected, args.output)
                     last_checkpoint_pass = n_pass
@@ -448,7 +446,8 @@ async def sample_loop(tasks: list[dict], args: argparse.Namespace) -> None:
             engine.agents[idx].trajectory.task = task
 
             traj = await engine.run_agent_trajectory_with_retry(
-                idx=idx, mode="Text",
+                idx=idx,
+                mode="Text",
             )
             traj.task = task
             traj.info["chat_completions"] = engine.agents[idx].chat_completions
@@ -510,10 +509,7 @@ async def sample_loop(tasks: list[dict], args: argparse.Namespace) -> None:
             pairs = pair_dpo_data(pos_cache, neg_cache)
             n_paired = len(pairs)
             n_unpaired = n_pos_final - n_paired
-            print(
-                f"\nDPO summary: {n_pos_final} positives, {n_neg_final} negatives"
-                f" -> {n_paired} pairs ({n_unpaired} positives had no matching negative)"
-            )
+            print(f"\nDPO summary: {n_pos_final} positives, {n_neg_final} negatives -> {n_paired} pairs ({n_unpaired} positives had no matching negative)")
             if pairs:
                 save_dpo_parquet(pairs, args.output)
             else:
@@ -527,10 +523,7 @@ async def sample_loop(tasks: list[dict], args: argparse.Namespace) -> None:
         # Stats
         # ------------------------------------------------------------------
         pass_rate = n_pass / max(n_attempts, 1)
-        print(
-            f"\nDone. passes={n_pass}  fails={n_fail}  attempts={n_attempts}"
-            f"  pass_rate={pass_rate:.2%}"
-        )
+        print(f"\nDone. passes={n_pass}  fails={n_fail}  attempts={n_attempts}  pass_rate={pass_rate:.2%}")
         print("Termination reason distribution:")
         for reason, count in reason_counter.most_common():
             print(f"  {reason:20s}  {count:>6d}  ({count / max(n_attempts, 1):.1%})")
@@ -540,57 +533,45 @@ async def sample_loop(tasks: list[dict], args: argparse.Namespace) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Collect SWE trajectories via rejection or DPO sampling"
-    )
+    p = argparse.ArgumentParser(description="Collect SWE trajectories via rejection or DPO sampling")
 
     # Model / API
     p.add_argument("--model", required=True, help="Model name (e.g. gpt-4o, claude-opus-4-6)")
     p.add_argument("--base_url", default="https://api.openai.com/v1", help="OpenAI-compatible API base URL")
     p.add_argument("--api_key", default=os.environ.get("OPENAI_API_KEY", ""), help="API key (default: $OPENAI_API_KEY)")
-    p.add_argument("--tokenizer", default=None,
-                   help="HuggingFace tokenizer name/path (default: same as --model)")
-    p.add_argument("--backend", choices=["openai", "vllm", "sglang"], default="openai",
-                   help="openai: chat completions (GPT-4o, Claude, etc.); "
-                        "vllm/sglang: completion API (local server)")
+    p.add_argument("--tokenizer", default=None, help="HuggingFace tokenizer name/path (default: same as --model)")
+    p.add_argument("--backend", choices=["openai", "vllm", "sglang"], default="openai", help="openai: chat completions (GPT-4o, Claude, etc.); vllm/sglang: completion API (local server)")
 
     # Data
     p.add_argument("--data", default="data/swe/R2E_Gym_Subset.parquet", help="Input task parquet")
     p.add_argument("--output", default="data/swe/rejection_sample.parquet", help="Output parquet path (also checkpoint)")
 
     # Mode
-    p.add_argument("--mode", choices=["rejection", "dpo"], default="rejection",
-                   help="rejection: keep only passing trajectories (SFT data); "
-                        "dpo: cache all trajectories and emit chosen/rejected pairs")
+    p.add_argument("--mode", choices=["rejection", "dpo"], default="rejection", help="rejection: keep only passing trajectories (SFT data); dpo: cache all trajectories and emit chosen/rejected pairs")
 
     # Scaffold
-    p.add_argument("--scaffold", choices=["r2egym", "sweagent"], default="r2egym",
-                   help="Tool scaffold to use (must match agent and env)")
+    p.add_argument("--scaffold", choices=["r2egym", "sweagent"], default="r2egym", help="Tool scaffold to use (must match agent and env)")
 
     # Sampling
-    p.add_argument("--target", type=int, default=5000,
-                   help="Stop after collecting this many *passing* trajectories")
+    p.add_argument("--target", type=int, default=5000, help="Stop after collecting this many *passing* trajectories")
     p.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     p.add_argument("--top_p", type=float, default=1.0, help="Nucleus sampling top-p (default: 1.0, no filtering)")
     p.add_argument("--top_k", type=int, default=-1, help="Top-k sampling (default: -1, disabled)")
-    p.add_argument("--disable_thinking", action="store_true",
-                   help="Disable thinking mode — inject empty <think></think> in generation prompt")
+    p.add_argument("--disable_thinking", action="store_true", help="Disable thinking mode — inject empty <think></think> in generation prompt")
 
     # Agent / env
     p.add_argument("--max_steps", type=int, default=50, help="Max agent steps per trajectory")
-    p.add_argument("--max_response_length", type=int, default=32768,
-                   help="Cumulative response token budget per trajectory (engine manages per-call max_tokens)")
-    p.add_argument("--max_prompt_length", type=int, default=131072,
-                   help="Max prompt length in tokens")
+    p.add_argument("--max_response_length", type=int, default=32768, help="Cumulative response token budget per trajectory (engine manages per-call max_tokens)")
+    p.add_argument("--max_prompt_length", type=int, default=131072, help="Max prompt length in tokens")
     p.add_argument("--step_timeout", type=int, default=90, help="Per-step sandbox timeout (s)")
     p.add_argument("--reward_timeout", type=int, default=300, help="Reward computation timeout (s)")
     p.add_argument("--trajectory_timeout", type=int, default=1200, help="Total trajectory wall-clock timeout (s)")
 
     # Concurrency / checkpointing
     p.add_argument("--n_parallel", type=int, default=128, help="Max concurrent trajectories")
-    p.add_argument("--checkpoint_interval", type=int, default=50,
-                   help="(rejection mode) checkpoint every N new passes")
+    p.add_argument("--checkpoint_interval", type=int, default=50, help="(rejection mode) checkpoint every N new passes")
 
     # Upload
     p.add_argument("--upload", action="store_true", help="Upload results to expdata service after completion")

@@ -1,4 +1,6 @@
 #!/root/.venv/bin/python
+# ruff: noqa: E402  # this file is a standalone sandbox tool script; imports are
+# interleaved with module-level config constants by design.
 
 """
 Description: Custom editing tool for viewing, creating and editing files
@@ -29,12 +31,11 @@ Allowed values: [`view`, `create`, `str_replace`, `insert`, `undo_edit`]
 import argparse
 import json
 import subprocess
-from pathlib import Path
-from collections import defaultdict
-from typing import Dict, List, Tuple, Optional
-import warnings
-
 import sys
+import warnings
+from collections import defaultdict
+from pathlib import Path
+
 import chardet
 
 # sys.stdout.reconfigure(encoding='utf-8')
@@ -50,19 +51,14 @@ Please read this error message carefully and then retry editing the file.
 ERRORS:
 """
 
-TRUNCATED_MESSAGE = (
-    "<response clipped><NOTE>To save on context only part of this file has been "
-    "shown to you. You should retry this tool after you have searched inside the file "
-    "with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>"
-)
+TRUNCATED_MESSAGE = "<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>"
 MAX_RESPONSE_LEN = 10000  # 4000 #12000 # 16000
 
 
-import sys
 import io
 
 # sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-if hasattr(sys.stdout, 'buffer'):
+if hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 else:
     # Fallback
@@ -76,7 +72,7 @@ def safe_print(x):
         print(x.encode("utf-8", errors="replace").decode("utf-8", errors="replace"))
 
 
-def maybe_truncate(content: str, truncate_after: Optional[int] = MAX_RESPONSE_LEN):
+def maybe_truncate(content: str, truncate_after: int | None = MAX_RESPONSE_LEN):
     if not truncate_after or len(content) <= truncate_after:
         return content
     return content[:truncate_after] + TRUNCATED_MESSAGE
@@ -101,12 +97,12 @@ class EditorResult:
         return self.output
 
 
-def load_history() -> Dict[str, List[str]]:
+def load_history() -> dict[str, list[str]]:
     """
     Load the file edit history from STATE_FILE if it exists.
     """
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
+        with open(STATE_FILE, encoding="utf-8") as f:
             data = json.load(f)
             return {k: v for k, v in data.items()}
     except FileNotFoundError:
@@ -116,7 +112,7 @@ def load_history() -> Dict[str, List[str]]:
         return {}
 
 
-def save_history(history: Dict[str, List[str]]):
+def save_history(history: dict[str, list[str]]):
     """
     Save the file edit history to STATE_FILE as JSON.
     """
@@ -143,9 +139,7 @@ class StrReplaceEditor:
     - Preserves original line numbering, printing placeholders for elided lines.
     """
 
-    def __init__(
-        self, file_history: Dict[str, List[str]], enable_linting: bool = False
-    ):
+    def __init__(self, file_history: dict[str, list[str]], enable_linting: bool = False):
         self.file_history = defaultdict(list, file_history)
         self.enable_linting = enable_linting
 
@@ -154,7 +148,7 @@ class StrReplaceEditor:
         command: str,
         path_str: str,
         file_text: str = None,
-        view_range: List[int] = None,
+        view_range: list[int] = None,
         old_str: str = None,
         new_str: str = None,
         insert_line: int = None,
@@ -175,25 +169,18 @@ class StrReplaceEditor:
         elif command == "undo_edit":
             return self.undo_edit(path)
         else:
-            raise EditorError(
-                f"Unrecognized command '{command}'. "
-                "Allowed commands: view, create, str_replace, insert, undo_edit."
-            )
+            raise EditorError(f"Unrecognized command '{command}'. Allowed commands: view, create, str_replace, insert, undo_edit.")
 
     def validate_path(self, command: str, path: Path):
         if command == "create":
             if path.exists():
-                raise EditorError(
-                    f"File already exists at: {path}. Cannot overwrite with 'create'."
-                )
+                raise EditorError(f"File already exists at: {path}. Cannot overwrite with 'create'.")
         else:
             if not path.exists():
                 raise EditorError(f"The path '{path}' does not exist.")
 
         if path.is_dir() and command != "view":
-            raise EditorError(
-                f"The path '{path}' is a directory. Only 'view' can be used on directories."
-            )
+            raise EditorError(f"The path '{path}' is a directory. Only 'view' can be used on directories.")
 
     @staticmethod
     def read_path(path: Path) -> str:
@@ -205,7 +192,7 @@ class StrReplaceEditor:
     def view(
         self,
         path: Path,
-        view_range: Optional[List[int]] = None,
+        view_range: list[int] | None = None,
         concise: bool = False,
         python_only: bool = True,
     ) -> EditorResult:
@@ -238,16 +225,13 @@ class StrReplaceEditor:
             try:
                 # Try using the newer parameters first (Python 3.7+)
                 try:
-                    proc = subprocess.run(
-                        cmd, capture_output=True, text=True, check=False
-                    )
+                    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
                 except TypeError:
                     # Fallback for Python 3.5 and 3.6 where capture_output and text are not supported
                     proc = subprocess.run(
                         cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        universal_newlines=True,
+                        capture_output=True,
+                        text=True,
                         check=False,
                     )
 
@@ -256,10 +240,7 @@ class StrReplaceEditor:
                 if stderr:
                     return EditorResult(output="", error=stderr)
 
-                msg = (
-                    f"Here's the files and directories up to 2 levels deep in {path}, "
-                    "excluding hidden:\n" + stdout
-                )
+                msg = f"Here's the files and directories up to 2 levels deep in {path}, excluding hidden:\n" + stdout
                 msg = maybe_truncate(msg)
                 return EditorResult(output=msg)
             except Exception as e:
@@ -271,10 +252,7 @@ class StrReplaceEditor:
         # ====================
         # NEW RESTRICTION: only .py files are allowed for viewing
         if path.suffix != ".py" and python_only:
-            error_msg = (
-                f"ERROR: Viewing non-Python files is disallowed for saving context. "
-                f"File '{path.name}' is not a .py file."
-            )
+            error_msg = f"ERROR: Viewing non-Python files is disallowed for saving context. File '{path.name}' is not a .py file."
             return EditorResult(output="", error=error_msg)
         # ====================
 
@@ -295,9 +273,7 @@ class StrReplaceEditor:
         else:
             # Normal reading
             file_text = self.read_path(path)
-            lines_with_original_numbers = [
-                (i, line) for i, line in enumerate(file_text.splitlines())
-            ]
+            lines_with_original_numbers = [(i, line) for i, line in enumerate(file_text.splitlines())]
 
         # Optionally slice by [start_line, end_line]
         total_lines = len(lines_with_original_numbers)
@@ -306,17 +282,12 @@ class StrReplaceEditor:
             if not (1 <= start <= total_lines):
                 return EditorResult(
                     output="",
-                    error=(
-                        f"Invalid view_range {view_range}: start line must be in [1, {total_lines}]"
-                    ),
+                    error=(f"Invalid view_range {view_range}: start line must be in [1, {total_lines}]"),
                 )
             if end != -1 and (end < start or end > total_lines):
                 return EditorResult(
                     output="",
-                    error=(
-                        f"Invalid view_range {view_range}: end must be >= start "
-                        f"and <= {total_lines}, or -1 to view until end."
-                    ),
+                    error=(f"Invalid view_range {view_range}: end must be >= start and <= {total_lines}, or -1 to view until end."),
                 )
 
             # Filter lines by 1-based index
@@ -336,20 +307,18 @@ class StrReplaceEditor:
         if concise:
             final_output = f"Here is a condensed view for file: {path}; [Note: Useful for understanding file structure in a concise manner. Please use specific view_range without concise cmd if you want to explore further into the relevant parts.]\n"
         else:
-            final_output = (
-                f"Here's the result of running `cat -n` on the file: {path}:\n"
-            )
+            final_output = f"Here's the result of running `cat -n` on the file: {path}:\n"
         # Then maybe truncate
         output_str_list = []
         for i, text in sliced_lines:
             # i is 0-based
-            output_str_list.append(f"{i+1:6d} {text}")
+            output_str_list.append(f"{i + 1:6d} {text}")
 
         final_output += "\n".join(output_str_list)
         final_output = maybe_truncate(final_output)
         return EditorResult(output=final_output)
 
-    def _get_elided_lines(self, path: Path) -> List[Tuple[int, str]]:
+    def _get_elided_lines(self, path: Path) -> list[tuple[int, str]]:
         """
         Parse the Python file with the built-in 'ast' module to skip
         large function bodies (≥ 5 lines).
@@ -362,7 +331,7 @@ class StrReplaceEditor:
             tree = ast.parse(file_text, filename=str(path))
         except SyntaxError as e:
             # Raise EditorError to make sure we handle it gracefully upstream
-            raise EditorError(f"Syntax error for file {path}: {e}")
+            raise EditorError(f"Syntax error for file {path}: {e}") from e
 
         def max_lineno_in_subtree(n: ast.AST) -> int:
             m = getattr(n, "lineno", 0)
@@ -373,7 +342,7 @@ class StrReplaceEditor:
         # We'll gather the line ranges for all large function bodies
         elide_line_ranges = []
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.body:
                 # Attempt to use end_lineno (Python 3.8+), else fallback
                 last_stmt = node.body[-1]
                 if hasattr(last_stmt, "end_lineno") and last_stmt.end_lineno:
@@ -399,14 +368,8 @@ class StrReplaceEditor:
 
             if isinstance(node, ast.ClassDef) and node.body:
                 # elide large docstrings for classes
-                has_docstring1 = (
-                    isinstance(node.body[0], ast.Expr)
-                    and isinstance(node.body[0].value, ast.Constant)
-                    and isinstance(node.body[0].value.value, str)
-                )
-                has_docstring2 = isinstance(node.body[0], ast.Expr) and isinstance(
-                    node.body[0].value, ast.Str
-                )
+                has_docstring1 = isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str)
+                has_docstring2 = isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Str)
                 has_docstring = has_docstring1 or has_docstring2
                 if has_docstring:
                     if hasattr(node.body[0], "end_lineno") and node.body[0].end_lineno:
@@ -417,26 +380,17 @@ class StrReplaceEditor:
                         docstring_end = max_lineno_in_subtree(node.body[0]) - 1
 
                     if (docstring_end - docstring_start) >= 4:
-                        elide_line_ranges.append(
-                            (docstring_start + 1, docstring_end - 1)
-                        )
+                        elide_line_ranges.append((docstring_start + 1, docstring_end - 1))
 
         # Build a set of lines to skip
-        elide_lines = {
-            line for (start, end) in elide_line_ranges for line in range(start, end + 1)
-        }
+        elide_lines = {line for (start, end) in elide_line_ranges for line in range(start, end + 1)}
 
         # Add an "elision notice" at the beginning of each range
-        elide_messages = [
-            (start, f"... eliding lines {start+1}-{end+1} ...")
-            for (start, end) in elide_line_ranges
-        ]
+        elide_messages = [(start, f"... eliding lines {start + 1}-{end + 1} ...") for (start, end) in elide_line_ranges]
 
         # Lines we do keep
         all_lines = file_text.splitlines()
-        keep_lines = [
-            (i, line) for i, line in enumerate(all_lines) if i not in elide_lines
-        ]
+        keep_lines = [(i, line) for i, line in enumerate(all_lines) if i not in elide_lines]
 
         # Combine and sort by line index
         combined = elide_messages + keep_lines
@@ -458,7 +412,7 @@ class StrReplaceEditor:
             path.write_text(clean_text, encoding="utf-8")
             self.file_history[str(path)].append("")
         except Exception as e:
-            raise EditorError(f"Error creating file at {path}: {e}")
+            raise EditorError(f"Error creating file at {path}: {e}") from e
 
         success_msg = f"File created at {path}. "
         success_msg += self._make_output(file_text, str(path))
@@ -473,14 +427,9 @@ class StrReplaceEditor:
         file_content = self.read_file(path)
         occurrences = file_content.count(old_str)
         if occurrences == 0:
-            raise EditorError(
-                f"No occurrences of '{old_str}' found in {path} for replacement."
-            )
+            raise EditorError(f"No occurrences of '{old_str}' found in {path} for replacement.")
         if occurrences > 1:
-            raise EditorError(
-                f"Multiple occurrences of '{old_str}' found in {path}. "
-                "Please ensure it is unique before using str_replace."
-            )
+            raise EditorError(f"Multiple occurrences of '{old_str}' found in {path}. Please ensure it is unique before using str_replace.")
 
         old_text = file_content
         updated_text = file_content.replace(old_str, new_str if new_str else "")
@@ -500,9 +449,7 @@ class StrReplaceEditor:
         snippet = "\n".join(updated_text.split("\n")[start_line : end_line + 1])
 
         success_msg = f"The file {path} has been edited. "
-        success_msg += self._make_output(
-            snippet, f"a snippet of {path}", start_line + 1
-        )
+        success_msg += self._make_output(snippet, f"a snippet of {path}", start_line + 1)
         success_msg += "Review the changes and make sure they are as expected. Edit the file again if necessary."
 
         return EditorResult(output=success_msg)
@@ -515,16 +462,10 @@ class StrReplaceEditor:
         file_text_lines = old_text.split("\n")
 
         if insert_line < 0 or insert_line > len(file_text_lines):
-            raise EditorError(
-                f"Invalid insert_line {insert_line}. Must be in [0, {len(file_text_lines)}]."
-            )
+            raise EditorError(f"Invalid insert_line {insert_line}. Must be in [0, {len(file_text_lines)}].")
 
         new_str_lines = new_str.split("\n")
-        new_file_text_lines = (
-            file_text_lines[:insert_line]
-            + new_str_lines
-            + file_text_lines[insert_line:]
-        )
+        new_file_text_lines = file_text_lines[:insert_line] + new_str_lines + file_text_lines[insert_line:]
         updated_text = "\n".join(new_file_text_lines)
 
         if self.enable_linting and path.suffix == ".py":
@@ -536,11 +477,7 @@ class StrReplaceEditor:
         self.write_file(path, updated_text)
 
         # Original snippet logic
-        snippet_lines = (
-            file_text_lines[max(0, insert_line - SNIPPET_LINES) : insert_line]
-            + new_str_lines
-            + file_text_lines[insert_line : insert_line + SNIPPET_LINES]
-        )
+        snippet_lines = file_text_lines[max(0, insert_line - SNIPPET_LINES) : insert_line] + new_str_lines + file_text_lines[insert_line : insert_line + SNIPPET_LINES]
         snippet = "\n".join(snippet_lines)
 
         success_msg = f"The file {path} has been edited. "
@@ -549,10 +486,7 @@ class StrReplaceEditor:
             "a snippet of the edited file",
             max(1, insert_line - SNIPPET_LINES + 1),
         )
-        success_msg += (
-            "Review the changes and make sure they are as expected "
-            "(correct indentation, no duplicate lines, etc). Edit the file again if necessary."
-        )
+        success_msg += "Review the changes and make sure they are as expected (correct indentation, no duplicate lines, etc). Edit the file again if necessary."
 
         return EditorResult(output=success_msg)
 
@@ -564,25 +498,20 @@ class StrReplaceEditor:
         old_text = self.file_history[path_str].pop()
         self.write_file(path, old_text)
 
-        return EditorResult(
-            output=(
-                f"Last edit to {path} undone successfully. "
-                + self._make_output(old_text, str(path))
-            )
-        )
+        return EditorResult(output=(f"Last edit to {path} undone successfully. " + self._make_output(old_text, str(path))))
 
     def read_file(self, path: Path) -> str:
         try:
             return self.read_path(path)
         except Exception as e:
-            raise EditorError(f"Failed to read file {path}: {e}")
+            raise EditorError(f"Failed to read file {path}: {e}") from e
 
     def write_file(self, path: Path, content: str):
         try:
             clean_content = content.encode("utf-8", errors="replace").decode("utf-8")
             path.write_text(clean_content, encoding="utf-8")
         except Exception as e:
-            raise EditorError(f"Failed to write file {path}: {e}")
+            raise EditorError(f"Failed to write file {path}: {e}") from e
 
     def _make_output(
         self,
@@ -599,14 +528,8 @@ class StrReplaceEditor:
             file_content = file_content.expandtabs()
 
         lines = file_content.split("\n")
-        numbered = "\n".join(
-            f"{i + init_line:6}\t{line}" for i, line in enumerate(lines)
-        )
-        return (
-            f"Here's the result of running `cat -n` on {file_descriptor}:\n"
-            + numbered
-            + "\n"
-        )
+        numbered = "\n".join(f"{i + init_line:6}\t{line}" for i, line in enumerate(lines))
+        return f"Here's the result of running `cat -n` on {file_descriptor}:\n" + numbered + "\n"
 
     def _lint_check(self, new_content: str, file_path: str) -> str:
         import ast
@@ -631,16 +554,11 @@ def main():
         try:
             start_line = int(parts[0])
             end_line = int(parts[1])
-        except ValueError:
-            raise argparse.ArgumentTypeError(f"Could not convert {parts} to integers.")
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(f"Could not convert {parts} to integers.") from e
         return [start_line, end_line]
 
-    parser = argparse.ArgumentParser(
-        description=(
-            "A disk-backed file editing tool (view, create, str_replace, insert, undo_edit) "
-            "with optional linting. Also supports a 'concise' view for Python files."
-        )
-    )
+    parser = argparse.ArgumentParser(description=("A disk-backed file editing tool (view, create, str_replace, insert, undo_edit) with optional linting. Also supports a 'concise' view for Python files."))
     parser.add_argument(
         "command",
         type=str,

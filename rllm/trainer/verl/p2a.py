@@ -19,7 +19,6 @@ Tracking modes:
 import json
 import os
 import re
-from typing import Optional
 
 
 class BonusMapStore:
@@ -30,9 +29,9 @@ class BonusMapStore:
 
     def __init__(self, bonus_map_dir: str):
         self.bonus_map_dir = bonus_map_dir
-        self._cache: dict[str, Optional[dict]] = {}
+        self._cache: dict[str, dict | None] = {}
 
-    def get(self, instance_id: str) -> Optional[dict]:
+    def get(self, instance_id: str) -> dict | None:
         if instance_id in self._cache:
             return self._cache[instance_id]
 
@@ -59,7 +58,7 @@ def _normalize_path(path: str) -> str:
     path = path.strip()
     for prefix in _SANDBOX_PREFIXES:
         if path.startswith(prefix):
-            return path[len(prefix):]
+            return path[len(prefix) :]
     if path.startswith("./"):
         return path[2:]
     return path
@@ -85,9 +84,9 @@ _FILE_EDITOR_XML_PATTERN = re.compile(
 
 # Old-style with = instead of name=: <parameter=command>view</parameter>
 _FILE_EDITOR_XML_EQ_PATTERN = re.compile(
-    r'<function=file_editor>.*?<parameter=command>view</parameter>'
-    r'.*?<parameter=path>([^<]+)</parameter>'
-    r'(?:.*?<parameter=view_range>\[(\d+),\s*(\d+)\]</parameter>)?',
+    r"<function=file_editor>.*?<parameter=command>view</parameter>"
+    r".*?<parameter=path>([^<]+)</parameter>"
+    r"(?:.*?<parameter=view_range>\[(\d+),\s*(\d+)\]</parameter>)?",
     re.DOTALL,
 )
 
@@ -146,7 +145,7 @@ _BASH_CMD_XML_PATTERN = re.compile(
     re.DOTALL,
 )
 _BASH_CMD_XML_EQ_PATTERN = re.compile(
-    r'<function=execute_bash>.*?<parameter=command>([^<]+)</parameter>',
+    r"<function=execute_bash>.*?<parameter=command>([^<]+)</parameter>",
     re.DOTALL,
 )
 _BASH_CMD_JSON_PATTERN = re.compile(
@@ -160,36 +159,36 @@ _BASH_CMD_JSON_PATTERN = re.compile(
 # cat -n <path>
 # Avoid matching cat with redirection (cat > file) or pipe-only usage
 _CAT_PATTERN = re.compile(
-    r'\bcat\s+(?:-[nAbeEstTv]+\s+)*'  # optional flags
-    r'([^\s|><;`$&]+\.py\b)',  # file path (must end in .py to reduce false positives)
+    r"\bcat\s+(?:-[nAbeEstTv]+\s+)*"  # optional flags
+    r"([^\s|><;`$&]+\.py\b)",  # file path (must end in .py to reduce false positives)
 )
 
 # head/tail [-n N] <path>
 _HEAD_TAIL_PATTERN = re.compile(
-    r'\b(head|tail)\s+'
-    r'(?:-(?:n\s*)?(\d+)\s+)?'  # optional -n N or -N
-    r'([^\s|><;`$&]+\.py\b)',
+    r"\b(head|tail)\s+"
+    r"(?:-(?:n\s*)?(\d+)\s+)?"  # optional -n N or -N
+    r"([^\s|><;`$&]+\.py\b)",
 )
 
 # sed -n 'START,ENDp' <path>
 _SED_N_PATTERN = re.compile(
     r"\bsed\s+-n\s+['\"]?(\d+),(\d+)p['\"]?\s+"
-    r'([^\s|><;`$&]+\.py\b)',
+    r"([^\s|><;`$&]+\.py\b)",
 )
 
 # grep -n <pattern> <path>  (with -n means showing line numbers → viewing context)
 # Also: grep -rn, grep -Hn, etc.
 _GREP_N_PATTERN = re.compile(
-    r'\bgrep\s+(?:-[A-Za-z]*n[A-Za-z]*\s+)'  # flags must include -n
+    r"\bgrep\s+(?:-[A-Za-z]*n[A-Za-z]*\s+)"  # flags must include -n
     r"(?:['\"][^'\"]*['\"]\s+|[^\s]+\s+)"  # pattern arg
-    r'([^\s|><;`$&]+\.py\b)',  # file path
+    r"([^\s|><;`$&]+\.py\b)",  # file path
 )
 
 # grep <pattern> <path>  (without -n, still viewing file content)
 _GREP_PATTERN = re.compile(
-    r'\bgrep\s+(?:-[A-Za-z]+\s+)*'  # optional flags
+    r"\bgrep\s+(?:-[A-Za-z]+\s+)*"  # optional flags
     r"(?:['\"][^'\"]*['\"]\s+|[^\s]+\s+)"  # pattern arg
-    r'([^\s|><;`$&]+\.py\b)',  # file path
+    r"([^\s|><;`$&]+\.py\b)",  # file path
 )
 
 # python -c "..." is NOT a file view → skip
@@ -312,6 +311,7 @@ def parse_read_actions(response_text: str, tracking_mode: str = "view_only") -> 
 # Call graph matching
 # ---------------------------------------------------------------------------
 
+
 def match_reads_to_callgraph(reads: list[dict], bonus_map: dict) -> float:
     """Match Read actions against call graph nodes.
 
@@ -363,6 +363,7 @@ def match_reads_to_callgraph(reads: list[dict], bonus_map: dict) -> float:
 # ---------------------------------------------------------------------------
 # V2 multiplier
 # ---------------------------------------------------------------------------
+
 
 def compute_p2a_multiplier(distance: float, m_max: float, advantage_sign: int) -> float:
     """Compute the V2 multiplicative advantage reshape factor.

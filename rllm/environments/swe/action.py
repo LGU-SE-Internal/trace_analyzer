@@ -1,5 +1,4 @@
 import re
-from typing import Dict
 import shlex
 
 
@@ -15,9 +14,7 @@ class Action:
       - to_bashcmd()     -> returns a string representing an equivalent bash command
     """
 
-    def __init__(
-        self, function_name: str, parameters: Dict[str, str], function_id: str = None
-    ):
+    def __init__(self, function_name: str, parameters: dict[str, str], function_id: str = None):
         self.function_name = function_name
         self.parameters = parameters
 
@@ -89,7 +86,7 @@ class Action:
         xml_str += "</function>"
         return xml_str
 
-    def to_dict(self) -> Dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """
         Returns a JSON-like dictionary representation of this action.
 

@@ -298,9 +298,12 @@ def rewrite_namespace(image: str, namespace: str) -> str:
 # Stage functions: each returns (image, success, msg)
 # ---------------------------------------------------------------------------
 
+
 def do_pull(
-    image: str, src_pool: RegistryPool,
-    dry_run: bool = False, skip_existing: bool = False,
+    image: str,
+    src_pool: RegistryPool,
+    dry_run: bool = False,
+    skip_existing: bool = False,
     pull_timeout: int = 120,
 ) -> tuple[str, bool, str]:
     """Pull image from src registries (round-robin with fallback) to local docker."""
@@ -326,8 +329,11 @@ def do_pull(
 
 
 def do_push(
-    image: str, src_pool: RegistryPool, dst_registry: str,
-    dry_run: bool = False, skip_existing: bool = False,
+    image: str,
+    src_pool: RegistryPool,
+    dst_registry: str,
+    dry_run: bool = False,
+    skip_existing: bool = False,
     dst_namespace: str | None = None,
     cleaner: DiskCleaner | _NullCleaner | None = None,
 ) -> tuple[str, bool, str]:
@@ -374,8 +380,11 @@ def do_push(
 
 
 def do_all(
-    image: str, src_pool: RegistryPool, dst_registry: str,
-    dry_run: bool = False, skip_existing: bool = False,
+    image: str,
+    src_pool: RegistryPool,
+    dst_registry: str,
+    dry_run: bool = False,
+    skip_existing: bool = False,
     dst_namespace: str | None = None,
     pull_timeout: int = 120,
     cleaner: DiskCleaner | _NullCleaner | None = None,
@@ -387,11 +396,7 @@ def do_all(
     if dry_run:
         regs = ",".join(src_pool.registries)
         src_example = f"{src_pool.registries[0]}/{image}"
-        return image, True, (
-            f"[dry-run] docker pull <round-robin:{regs}>/{image}"
-            f" && docker tag {src_example} {dst}"
-            f" && docker push {dst} && docker rmi ..."
-        )
+        return image, True, (f"[dry-run] docker pull <round-robin:{regs}>/{image} && docker tag {src_example} {dst} && docker push {dst} && docker rmi ...")
 
     # Skip if already in destination
     if skip_existing:
@@ -449,6 +454,7 @@ def do_all(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(description="Mirror SWE docker images between registries.")
     parser.add_argument(
@@ -461,16 +467,9 @@ def main():
         "--src",
         type=str,
         default=SRC_REGISTRY_DEFAULT,
-        help=(
-            f"Source registry or comma-separated list for round-robin load balancing "
-            f"(default: {SRC_REGISTRY_DEFAULT}). "
-            f"Example: mirror1.example.com,mirror2.example.com"
-        ),
+        help=(f"Source registry or comma-separated list for round-robin load balancing (default: {SRC_REGISTRY_DEFAULT}). Example: mirror1.example.com,mirror2.example.com"),
     )
-    parser.add_argument(
-        "--dst", type=str, 
-        default=DST_REGISTRY_DEFAULT, 
-        help=f"Destination registry (default: {DST_REGISTRY_DEFAULT}).")
+    parser.add_argument("--dst", type=str, default=DST_REGISTRY_DEFAULT, help=f"Destination registry (default: {DST_REGISTRY_DEFAULT}).")
     parser.add_argument(
         "--dst-namespace",
         type=str,
@@ -536,7 +535,7 @@ def main():
     stage_desc = {
         "pull": f"Pulling: {src_label} -> local",
         "push": f"Pushing: local -> {args.dst}",
-        "all":  f"Mirroring: {src_label} -> {args.dst}",
+        "all": f"Mirroring: {src_label} -> {args.dst}",
     }
     logger.info(stage_desc[args.stage])
 

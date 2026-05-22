@@ -15,7 +15,6 @@ API endpoints (all JSON):
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 import time
@@ -61,17 +60,21 @@ def _load_instances(dataset: str) -> list[dict]:
             ei = json.loads(ei_raw) if isinstance(ei_raw, str) else ei_raw
             repo = ei.get("repo_name", "")
             commit = ei.get("commit_hash", "")[:8]
-            results.append({
-                "instance_id": f"{repo}__{commit}",
-                "docker_image": ei.get("docker_image", ""),
-            })
+            results.append(
+                {
+                    "instance_id": f"{repo}__{commit}",
+                    "docker_image": ei.get("docker_image", ""),
+                }
+            )
     else:
         for ei_raw in extra:
             ei = json.loads(ei_raw) if isinstance(ei_raw, str) else ei_raw
-            results.append({
-                "instance_id": ei.get("instance_id", ""),
-                "docker_image": ei.get("docker_image", ei.get("image_name", "")),
-            })
+            results.append(
+                {
+                    "instance_id": ei.get("instance_id", ""),
+                    "docker_image": ei.get("docker_image", ei.get("image_name", "")),
+                }
+            )
 
     # Deduplicate by instance_id
     seen = set()
@@ -213,9 +216,7 @@ def _exec_cmd(cmd: str, timeout: int) -> dict:
     try:
         # Wrap in bash -c for shell features; get cwd afterwards
         wrapped = f'{cmd}; echo "___CWD___"; pwd'
-        resp = session.execute(
-            steps=[{"name": "exec", "command": ["bash", "-c", wrapped], "timeout": timeout}]
-        )
+        resp = session.execute(steps=[{"name": "exec", "command": ["bash", "-c", wrapped], "timeout": timeout}])
         result = resp.results[0]
         stdout = result.output.stdout or ""
         stderr = result.output.stderr or ""
@@ -287,12 +288,14 @@ class Handler(SimpleHTTPRequestHandler):
 
         elif path == "/api/session/status":
             with STATE.lock:
-                self._json_response({
-                    "status": STATE.status,
-                    "status_msg": STATE.status_msg,
-                    "instance_id": STATE.instance_id,
-                    "cwd": STATE.cwd,
-                })
+                self._json_response(
+                    {
+                        "status": STATE.status,
+                        "status_msg": STATE.status_msg,
+                        "instance_id": STATE.instance_id,
+                        "cwd": STATE.cwd,
+                    }
+                )
 
         elif path == "/api/session/log":
             since = float(qs.get("since", [0])[0])

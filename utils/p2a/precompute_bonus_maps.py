@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,15 +51,20 @@ from rllm.environments.swe.trace import (
     normalize_task,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_FIXTURE_NAMES = frozenset({
-    "setUp", "tearDown", "setUpClass", "tearDownClass",
-    "asyncSetUp", "asyncTearDown",
-})
+_FIXTURE_NAMES = frozenset(
+    {
+        "setUp",
+        "tearDown",
+        "setUpClass",
+        "tearDownClass",
+        "asyncSetUp",
+        "asyncTearDown",
+    }
+)
 
 
 def find_newly_created_callables(task: dict) -> list[dict]:
@@ -107,8 +113,6 @@ def find_newly_created_callables(task: dict) -> list[dict]:
     return []
 
 
-import re
-
 _PARAMETRIZE_SUFFIX_RE = re.compile(r"\[.*\]$")
 
 
@@ -117,9 +121,7 @@ def _strip_parametrize(name: str) -> str:
     return _PARAMETRIZE_SUFFIX_RE.sub("", name)
 
 
-def _get_f2p_test_funcs(
-    task: dict, raw_output: str, swebench_verified: bool
-) -> set[str] | None:
+def _get_f2p_test_funcs(task: dict, raw_output: str, swebench_verified: bool) -> set[str] | None:
     """Identify fail-to-pass (F2P) test function names.
 
     F2P = tests that FAIL on buggy code and PASS after the developer's fix.
@@ -168,9 +170,7 @@ def _get_f2p_test_funcs(
         return failed_funcs  # empty set = parsed OK but no failures
 
 
-def _filter_traces_to_f2p(
-    traces: list[list[dict]], f2p_test_funcs: set[str]
-) -> list[list[dict]]:
+def _filter_traces_to_f2p(traces: list[list[dict]], f2p_test_funcs: set[str]) -> list[list[dict]]:
     """Keep only traces whose call chain originates from an F2P test function.
 
     A trace originates from an F2P test if ANY test-file frame has a
@@ -199,6 +199,7 @@ def _filter_traces_to_f2p(
 # ---------------------------------------------------------------------------
 # Static bonus map
 # ---------------------------------------------------------------------------
+
 
 def compute_static_bonus_map(task: dict) -> dict:
     """Compute a static bonus map (patched callables only, all d=0)."""
@@ -252,6 +253,7 @@ def compute_static_bonus_map(task: dict) -> dict:
 # Dynamic bonus map — decision tree
 # ---------------------------------------------------------------------------
 
+
 def compute_dynamic_bonus_map(task: dict) -> dict:
     """Compute a dynamic bonus map using the full trace pipeline.
 
@@ -292,10 +294,12 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
     # ── Dynamic layer: instrument → run → parse ───────────────────────────
     from rllm.environments.swe.swe import SWEEnv
 
-    env = SWEEnv.from_dict({
-        **task,
-        "experiment_id": os.environ.get("ARL_EXPERIMENT_ID", "bonus-maps"),
-    })
+    env = SWEEnv.from_dict(
+        {
+            **task,
+            "experiment_id": os.environ.get("ARL_EXPERIMENT_ID", "bonus-maps"),
+        }
+    )
     try:
         env.reset()
 
@@ -307,53 +311,45 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
         # Clear stale trace file, run tests
         env._run(f"rm -f {TRACE_FILE_PATH}")
 
-        test_script = (
-            "/run_tests.sh" if env.swebench_verified
-            else f"{env.alt_path}/run_tests.sh"
-        )
+        test_script = "/run_tests.sh" if env.swebench_verified else f"{env.alt_path}/run_tests.sh"
         if not env.swebench_verified:
-            env._run(
-                f"sed -i '/pytest/{{/-rA/!s/pytest/pytest -rA/}}' {test_script}"
-            )
-        stdout, stderr, test_exit = env._execute_raw(
-            f"bash {test_script}", timeout=300
-        )
+            env._run(f"sed -i '/pytest/{{/-rA/!s/pytest/pytest -rA/}}' {test_script}")
+        stdout, stderr, test_exit = env._execute_raw(f"bash {test_script}", timeout=300)
         raw_output = f"{stdout}\n{stderr}" if stderr else stdout
 
         # ── Decision node: NO_TRACE ──────────────────────────────────
         # parse_fault_traces_from_file returns only traces that contain
         # at least one is_patched=True frame (i.e. GT callable was entered).
         # "raw traces" here = traces with GT.
-        raw_traces = parse_fault_traces_from_file(
-            env, instrumented_callables, env.repo_path, env.alt_path
-        )
+        raw_traces = parse_fault_traces_from_file(env, instrumented_callables, env.repo_path, env.alt_path)
 
         # Also check the raw trace file for total entry count (including
         # traces without GT) to distinguish no_trace from no_gt.
-        trace_file_out, _, tf_exit = env._execute_raw(
-            f"wc -l < {TRACE_FILE_PATH} 2>/dev/null || echo 0"
-        )
+        trace_file_out, _, tf_exit = env._execute_raw(f"wc -l < {TRACE_FILE_PATH} 2>/dev/null || echo 0")
         try:
             total_trace_entries = int(trace_file_out.strip())
         except (ValueError, AttributeError):
             total_trace_entries = 0
 
         if total_trace_entries == 0:
-            print(f"  [{instance_id}] no_trace: 0 trace entries. "
-                  f"test_exit={test_exit}, "
-                  f"instrumented={len(instrumented_callables)}")
+            print(f"  [{instance_id}] no_trace: 0 trace entries. test_exit={test_exit}, instrumented={len(instrumented_callables)}")
             return _make_result(
-                instance_id, "no_trace", all_modified, newly_created,
+                instance_id,
+                "no_trace",
+                all_modified,
+                newly_created,
                 error=True,
             )
 
         # ── Decision node: NO_GT ─────────────────────────────────────
         # total_trace_entries > 0 but raw_traces (filtered to GT) == 0
         if not raw_traces:
-            print(f"  [{instance_id}] no_gt: {total_trace_entries} trace entries "
-                  f"but 0 contain GT callables. test_exit={test_exit}")
+            print(f"  [{instance_id}] no_gt: {total_trace_entries} trace entries but 0 contain GT callables. test_exit={test_exit}")
             return _make_result(
-                instance_id, "no_gt", all_modified, newly_created,
+                instance_id,
+                "no_gt",
+                all_modified,
+                newly_created,
                 error=True,
             )
 
@@ -362,30 +358,36 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
 
         if f2p_test_funcs is None:
             # Can't parse test output at all
-            print(f"  [{instance_id}] no_f2p: f2p_test_funcs=None (parse failed). "
-                  f"Dropping all {len(raw_traces)} traces. test_exit={test_exit}")
+            print(f"  [{instance_id}] no_f2p: f2p_test_funcs=None (parse failed). Dropping all {len(raw_traces)} traces. test_exit={test_exit}")
             return _make_result(
-                instance_id, "no_f2p", all_modified, newly_created,
+                instance_id,
+                "no_f2p",
+                all_modified,
+                newly_created,
                 error=True,
             )
 
         if len(f2p_test_funcs) == 0:
             # Tests parsed OK but none failed → all tests pass on buggy code
-            print(f"  [{instance_id}] all_pass: 0 test failures on buggy code. "
-                  f"test_exit={test_exit}")
+            print(f"  [{instance_id}] all_pass: 0 test failures on buggy code. test_exit={test_exit}")
             return _make_result(
-                instance_id, "all_pass", all_modified, newly_created,
+                instance_id,
+                "all_pass",
+                all_modified,
+                newly_created,
                 error=True,
             )
 
         f2p_traces = _filter_traces_to_f2p(raw_traces, f2p_test_funcs)
-        print(f"  [{instance_id}] F2P filter: {len(raw_traces)} → {len(f2p_traces)} "
-              f"(F2P funcs: {f2p_test_funcs})")
+        print(f"  [{instance_id}] F2P filter: {len(raw_traces)} → {len(f2p_traces)} (F2P funcs: {f2p_test_funcs})")
 
         if not f2p_traces:
             print(f"  [{instance_id}] no_f2p: F2P filter removed all traces")
             return _make_result(
-                instance_id, "no_f2p", all_modified, newly_created,
+                instance_id,
+                "no_f2p",
+                all_modified,
+                newly_created,
                 error=True,
             )
 
@@ -394,26 +396,16 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
 
         def _read_file(rel_path: str) -> str:
             from rllm.environments.swe.trace import _read_sandbox_file
-            content, exit_code = _read_sandbox_file(
-                env, f"{env.repo_path}/{rel_path}"
-            )
+
+            content, exit_code = _read_sandbox_file(env, f"{env.repo_path}/{rel_path}")
             return content if exit_code == 0 else ""
 
-        result = build_call_graph_from_traces(
-            traces, all_modified, file_reader=_read_file
-        )
+        result = build_call_graph_from_traces(traces, all_modified, file_reader=_read_file)
 
         # ── Decision node: STANDARD vs DIRECT ────────────────────────
         nodes = result.get("call_graph_nodes", {})
-        n_test_entries = sum(
-            1 for v in nodes.values()
-            if _is_test_file(v.get("file_path", ""))
-        )
-        n_intermediate = sum(
-            1 for v in nodes.values()
-            if not _is_test_file(v.get("file_path", ""))
-            and v.get("normalized_distance", 0) > 0
-        )
+        n_test_entries = sum(1 for v in nodes.values() if _is_test_file(v.get("file_path", "")))
+        n_intermediate = sum(1 for v in nodes.values() if not _is_test_file(v.get("file_path", "")) and v.get("normalized_distance", 0) > 0)
 
         if n_test_entries > 0 and n_intermediate > 0:
             case_type = "standard"
@@ -431,7 +423,10 @@ def compute_dynamic_bonus_map(task: dict) -> dict:
         print(f"  [WARN] Dynamic tracing failed for {instance_id}: {e}")
         traceback.print_exc()
         return _make_result(
-            instance_id, "no_trace", all_modified, newly_created,
+            instance_id,
+            "no_trace",
+            all_modified,
+            newly_created,
             error=True,
         )
     finally:
@@ -463,6 +458,7 @@ def _make_result(
 # Parallel processing & CLI
 # ---------------------------------------------------------------------------
 
+
 def _process_one(args):
     """Worker function for parallel processing."""
     idx, task_json, output_dir, mode = args
@@ -488,14 +484,10 @@ def _process_one(args):
 def main():
     parser = argparse.ArgumentParser(description="Precompute P2A bonus maps")
     parser.add_argument("parquet_path", help="Path to dataset parquet file")
-    parser.add_argument("--output_dir", required=True,
-                        help="Output directory for bonus map JSONs")
-    parser.add_argument("--mode", choices=["static", "dynamic"], default="static",
-                        help="static: AST diff only. dynamic: full trace pipeline")
-    parser.add_argument("--n_parallel", type=int, default=1,
-                        help="Number of parallel workers")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Process only first N instances")
+    parser.add_argument("--output_dir", required=True, help="Output directory for bonus map JSONs")
+    parser.add_argument("--mode", choices=["static", "dynamic"], default="static", help="static: AST diff only. dynamic: full trace pipeline")
+    parser.add_argument("--n_parallel", type=int, default=1, help="Number of parallel workers")
+    parser.add_argument("--limit", type=int, default=None, help="Process only first N instances")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -513,6 +505,7 @@ def main():
         work_items.append((idx, extra_raw, args.output_dir, args.mode))
 
     from collections import Counter
+
     case_counts = Counter()
     error_count = 0
     total = len(work_items)
@@ -527,12 +520,10 @@ def main():
             done = sum(case_counts.values())
             if done % 100 == 0:
                 traceable = case_counts["direct"] + case_counts["standard"]
-                print(f"  Progress: {done}/{total} "
-                      f"(traceable: {traceable}, errors: {error_count})")
+                print(f"  Progress: {done}/{total} (traceable: {traceable}, errors: {error_count})")
     else:
         with ThreadPoolExecutor(max_workers=args.n_parallel) as executor:
-            futures = {executor.submit(_process_one, item): item
-                       for item in work_items}
+            futures = {executor.submit(_process_one, item): item for item in work_items}
             done_count = 0
             for future in as_completed(futures):
                 idx, instance_id, case_type, error = future.result()
@@ -542,24 +533,21 @@ def main():
                 case_counts[case_type] += 1
                 if done_count % 100 == 0:
                     traceable = case_counts["direct"] + case_counts["standard"]
-                    print(f"  Progress: {done_count}/{total} "
-                          f"(traceable: {traceable}, errors: {error_count})")
+                    print(f"  Progress: {done_count}/{total} (traceable: {traceable}, errors: {error_count})")
 
     # Summary table
     traceable = case_counts["direct"] + case_counts["standard"]
-    n_error = sum(
-        case_counts[ct] for ct in ("no_trace", "no_gt", "no_f2p")
-    )
+    sum(case_counts[ct] for ct in ("no_trace", "no_gt", "no_f2p"))
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"Summary: {total} instances from {args.parquet_path}")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
 
-    print(f"\ntraceable/          {traceable:5d}  ({100*traceable/total:.1f}%)")
+    print(f"\ntraceable/          {traceable:5d}  ({100 * traceable / total:.1f}%)")
     print(f"  direct             {case_counts['direct']:5d}")
     print(f"  standard           {case_counts['standard']:5d}")
 
-    print(f"\nuntraceable/        {total - traceable:5d}  ({100*(total-traceable)/total:.1f}%)")
+    print(f"\nuntraceable/        {total - traceable:5d}  ({100 * (total - traceable) / total:.1f}%)")
     print(f"  newly_created      {case_counts['newly_created']:5d}")
     print(f"  no_callable        {case_counts['no_callable']:5d}")
     print(f"  all_pass  (error)  {case_counts['all_pass']:5d}")
