@@ -21,7 +21,7 @@ dependencies = [
     # Core ML/AI packages
     "torch",
     "torchvision",
-    "transformers>=4.55.0,<=5.0.0",
+    "transformers>=4.55.0,<=4.56.1",
     # Data processing
     "datasets>=2.20.0",
     "pandas",
