@@ -177,6 +177,9 @@ def _filter_traces_to_f2p(traces: list[list[dict]], f2p_test_funcs: set[str]) ->
     func_name in *f2p_test_funcs*, or is a fixture (setUp/tearDown) that
     runs for every test including F2P ones.
     """
+    if not f2p_test_funcs:
+        return []
+
     filtered = []
     for trace in traces:
         keep = False
@@ -185,10 +188,11 @@ def _filter_traces_to_f2p(traces: list[list[dict]], f2p_test_funcs: set[str]) ->
             if not _is_test_file(file_path):
                 continue
             func_name = frame.get("func_name", "")
-            if func_name in f2p_test_funcs:
+            bare_func_name = _strip_parametrize(func_name.rsplit(".", 1)[-1])
+            if bare_func_name in f2p_test_funcs:
                 keep = True
                 break
-            if func_name in _FIXTURE_NAMES:
+            if bare_func_name in _FIXTURE_NAMES:
                 keep = True
                 break
         if keep:
