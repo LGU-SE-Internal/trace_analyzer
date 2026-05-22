@@ -108,9 +108,7 @@ class TestF2_TraceInstrumentation:
             ),
         ],
     )
-    def test_f2_oneline_suites_compile_and_trace(
-        self, monkeypatch, source, callables, expression, expected_name, expected_result
-    ):
+    def test_f2_oneline_suites_compile_and_trace(self, monkeypatch, source, callables, expression, expected_name, expected_result):
         calls = _install_tracer_stub(monkeypatch)
 
         output, namespace = _exec_instrumented(source, callables)

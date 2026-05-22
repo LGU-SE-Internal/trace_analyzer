@@ -206,11 +206,7 @@ def analyze_instance_static(task: dict) -> dict:
         for name in old_names - new_names:
             deleted.append(f"{path}::{name}")
 
-        callable_changes = (
-            sum(1 for n in old_names & new_names if old_callables[n].source != new_callables[n].source)
-            + len(new_names - old_names)
-            + len(old_names - new_names)
-        )
+        callable_changes = sum(1 for n in old_names & new_names if old_callables[n].source != new_callables[n].source) + len(new_names - old_names) + len(old_names - new_names)
         if old_src != new_src and callable_changes == 0:
             has_non_callable_changes = True
 
@@ -273,21 +269,21 @@ def print_bonus_map_report(bonus_dir: str, maps: dict[str, dict]) -> None:
     n_traceable = case_counts.get("direct", 0) + case_counts.get("standard", 0)
     n_untraceable = total - n_traceable
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"Bonus Map Analysis: {total} instances from {bonus_dir}")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
 
     # Overview bar
     bar_w = 40
     filled = round(n_traceable / total * bar_w) if total else 0
     bar = "#" * filled + "." * (bar_w - filled)
-    print(f"\nTraceable  [{bar}]  {n_traceable}/{total} ({n_traceable/total*100:.1f}%)")
+    print(f"\nTraceable  [{bar}]  {n_traceable}/{total} ({n_traceable / total * 100:.1f}%)")
 
     # Summary table (same format as precompute_bonus_maps.py)
-    print(f"\ntraceable/          {n_traceable:5d}  ({100*n_traceable/total:.1f}%)")
+    print(f"\ntraceable/          {n_traceable:5d}  ({100 * n_traceable / total:.1f}%)")
     print(f"  direct             {case_counts['direct']:5d}")
     print(f"  standard           {case_counts['standard']:5d}")
-    print(f"\nuntraceable/        {n_untraceable:5d}  ({100*n_untraceable/total:.1f}%)")
+    print(f"\nuntraceable/        {n_untraceable:5d}  ({100 * n_untraceable / total:.1f}%)")
     print(f"  newly_created      {case_counts['newly_created']:5d}")
     print(f"  no_callable        {case_counts['no_callable']:5d}")
     print(f"  no_trace (error)   {case_counts['no_trace']:5d}")
@@ -295,8 +291,7 @@ def print_bonus_map_report(bonus_dir: str, maps: dict[str, dict]) -> None:
     print(f"  no_f2p   (error)   {case_counts['no_f2p']:5d}")
 
     # Any case_types not in the standard set
-    standard_types = {"direct", "standard", "newly_created", "no_callable",
-                      "no_trace", "no_gt", "no_f2p"}
+    standard_types = {"direct", "standard", "newly_created", "no_callable", "no_trace", "no_gt", "no_f2p"}
     for ct, cnt in case_counts.most_common():
         if ct not in standard_types:
             print(f"  {ct:<18s} {cnt:5d}")
@@ -308,23 +303,20 @@ def print_bonus_map_report(bonus_dir: str, maps: dict[str, dict]) -> None:
         intermediates = [c["n_intermediate"] for c in traceable_cls]
         test_entries = [c["n_test_entries"] for c in traceable_cls]
 
-        print(f"\nTraceable instance statistics:")
-        print(f"  hop_max:        mean={sum(hops)/len(hops):.1f}  "
-              f"median={sorted(hops)[len(hops)//2]}  max={max(hops)}")
-        print(f"  intermediate:   mean={sum(intermediates)/len(intermediates):.1f}  "
-              f"median={sorted(intermediates)[len(intermediates)//2]}  max={max(intermediates)}")
-        print(f"  test_entries:   mean={sum(test_entries)/len(test_entries):.1f}  "
-              f"median={sorted(test_entries)[len(test_entries)//2]}  max={max(test_entries)}")
+        print("\nTraceable instance statistics:")
+        print(f"  hop_max:        mean={sum(hops) / len(hops):.1f}  median={sorted(hops)[len(hops) // 2]}  max={max(hops)}")
+        print(f"  intermediate:   mean={sum(intermediates) / len(intermediates):.1f}  median={sorted(intermediates)[len(intermediates) // 2]}  max={max(intermediates)}")
+        print(f"  test_entries:   mean={sum(test_entries) / len(test_entries):.1f}  median={sorted(test_entries)[len(test_entries) // 2]}  max={max(test_entries)}")
 
         # Hop distribution
         hop_dist = Counter(hops)
-        print(f"\n  hop_max distribution (traceable):")
+        print("\n  hop_max distribution (traceable):")
         for h in sorted(hop_dist):
             cnt = hop_dist[h]
-            print(f"    hop_max={h}: {cnt:>5} instances  ({cnt/len(traceable_cls)*100:.1f}%)")
+            print(f"    hop_max={h}: {cnt:>5} instances  ({cnt / len(traceable_cls) * 100:.1f}%)")
 
     # Examples per case_type
-    print(f"\nExamples:")
+    print("\nExamples:")
     by_ct: dict[str, list[dict]] = {}
     for c in classifications:
         by_ct.setdefault(c["case_type"], []).append(c)
@@ -386,7 +378,7 @@ def print_static_report(path: str, results: list[dict]) -> None:
     bar_w = 40
     filled = round(n_t / total * bar_w) if total else 0
     bar = "#" * filled + "." * (bar_w - filled)
-    print(f"  Traceable  [{bar}]  {n_t}/{total} ({n_t/total*100:.1f}%)")
+    print(f"  Traceable  [{bar}]  {n_t}/{total} ({n_t / total * 100:.1f}%)")
     print()
 
     # Non-traceable breakdown
@@ -395,7 +387,7 @@ def print_static_report(path: str, results: list[dict]) -> None:
         for cat, cnt in cat_counts.most_common():
             if cat == "traceable":
                 continue
-            print(f"    {cat:<44s} {cnt:>5}  ({cnt/total*100:.1f}%)")
+            print(f"    {cat:<44s} {cnt:>5}  ({cnt / total * 100:.1f}%)")
         print()
 
     # Callable count distribution
@@ -415,9 +407,9 @@ def print_static_report(path: str, results: list[dict]) -> None:
         also_d = sum(1 for r in traceable if r["deleted"])
         also_nc = sum(1 for r in traceable if r["has_non_callable"])
         print("  Among traceable instances, also have:")
-        print(f"    + newly added callables:    {also_a:>5} ({also_a/len(traceable)*100:.1f}%)")
-        print(f"    + fully deleted callables:  {also_d:>5} ({also_d/len(traceable)*100:.1f}%)")
-        print(f"    + non-callable changes:     {also_nc:>5} ({also_nc/len(traceable)*100:.1f}%)")
+        print(f"    + newly added callables:    {also_a:>5} ({also_a / len(traceable) * 100:.1f}%)")
+        print(f"    + fully deleted callables:  {also_d:>5} ({also_d / len(traceable) * 100:.1f}%)")
+        print(f"    + non-callable changes:     {also_nc:>5} ({also_nc / len(traceable) * 100:.1f}%)")
         print()
 
     # Examples
@@ -439,9 +431,7 @@ def print_static_report(path: str, results: list[dict]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Analyze traceability of SWE dataset instances."
-    )
+    parser = argparse.ArgumentParser(description="Analyze traceability of SWE dataset instances.")
     parser.add_argument(
         "parquet_files",
         nargs="*",

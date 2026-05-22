@@ -116,15 +116,17 @@ def report_multi_sample(records: list[dict]):
         samples_sorted = sorted(samples, key=lambda x: x.get("sample_idx", 0))
         c = sum(1 for s in samples_sorted if s["reward"] >= 1.0)
         n = len(samples_sorted)
-        instance_stats.append({
-            "uid": uid,
-            "instance_id": samples_sorted[0].get("instance_id", ""),
-            "repo": samples_sorted[0].get("repo", "unknown"),
-            "n": n,
-            "c": c,
-            "mean_reward": sum(s["reward"] for s in samples_sorted) / n,
-            "rewards": [s["reward"] for s in samples_sorted],
-        })
+        instance_stats.append(
+            {
+                "uid": uid,
+                "instance_id": samples_sorted[0].get("instance_id", ""),
+                "repo": samples_sorted[0].get("repo", "unknown"),
+                "n": n,
+                "c": c,
+                "mean_reward": sum(s["reward"] for s in samples_sorted) / n,
+                "rewards": [s["reward"] for s in samples_sorted],
+            }
+        )
 
     # Dataset-level
     all_rewards = [r["reward"] for r in records]

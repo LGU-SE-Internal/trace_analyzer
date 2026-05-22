@@ -43,7 +43,6 @@ import os
 import re
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -287,13 +286,10 @@ def main():
 
     # --- Import ARL (only needed for non-dry-run) ---
     try:
-        from arl.gateway_client import GatewayError, PoolNotReadyError
+        from arl.gateway_client import GatewayError
         from arl.warmpool import WarmPoolManager
     except ImportError:
-        sys.exit(
-            "arl library is required. Install it or activate the venv:\n"
-            "  source .venv/bin/activate"
-        )
+        sys.exit("arl library is required. Install it or activate the venv:\n  source .venv/bin/activate")
 
     # --- Delete mode ---
     if args.delete:
@@ -322,9 +318,7 @@ def main():
     # Each worker handles ONE pool's full lifecycle. This ensures at most
     # `concurrency` pods are pulling images at any time — preventing
     # registry overload from thousands of simultaneous pulls.
-    logger.info(
-        f"Prefetching {len(pools)} WarmPools with concurrency={args.concurrency}"
-    )
+    logger.info(f"Prefetching {len(pools)} WarmPools with concurrency={args.concurrency}")
     logger.info(f"Gateway: {args.gateway}, Namespace: {args.namespace}")
     if args.scale_down_after:
         logger.info("Scale-down-after enabled: pools scaled to 0 replicas after image pull")
@@ -343,7 +337,6 @@ def main():
         )
         try:
             # 1. Create or scale up existing pool
-            already_exists = False
             try:
                 mgr.create_warmpool(
                     name=name,
@@ -352,7 +345,6 @@ def main():
                 )
             except GatewayError as e:
                 if e.status_code == 409 or "already exists" in str(e):
-                    already_exists = True
                     # Pool CRD exists — check if it already has ready replicas
                     try:
                         info = mgr.get_warmpool(name)
@@ -416,10 +408,7 @@ def main():
 
     # --- Summary ---
     logger.info("=" * 50)
-    logger.info(
-        f"Done: created={counters['created']}, skipped={counters['skipped']}, "
-        f"failed={counters['failed']}"
-    )
+    logger.info(f"Done: created={counters['created']}, skipped={counters['skipped']}, failed={counters['failed']}")
 
     if failed_names:
         failed_path = REPO_ROOT / "scripts" / ".prefetch_failed.log"

@@ -36,14 +36,14 @@ def extract_thinking_and_action(content: str) -> tuple[str, str]:
         think_start = content.index("<think>") + len("<think>")
         think_end = content.index("</think>")
         reasoning = content[think_start:think_end].strip("\n")
-        action = content[think_end + len("</think>"):].lstrip("\n")
+        action = content[think_end + len("</think>") :].lstrip("\n")
         return reasoning, action
 
     # Find first tool call
     tool_call_match = re.search(r"<function=\w+>", content)
     if tool_call_match:
         pre_tool = content[: tool_call_match.start()].rstrip("\n")
-        tool_and_rest = content[tool_call_match.start():]
+        tool_and_rest = content[tool_call_match.start() :]
         return pre_tool, tool_and_rest
     else:
         # Final message (no tool call)
@@ -103,6 +103,7 @@ def main():
     args = parser.parse_args()
 
     from transformers import AutoTokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     print(f"Loaded tokenizer from {args.model_path}")
 
@@ -117,8 +118,7 @@ def main():
         all_samples.extend(samples)
 
     avg_steps = len(all_samples) / len(df)
-    print(f"Split into {len(all_samples)} per-step samples "
-          f"(avg {avg_steps:.1f} steps/trajectory)")
+    print(f"Split into {len(all_samples)} per-step samples (avg {avg_steps:.1f} steps/trajectory)")
 
     # Render prompts using chat template
     rendered = render_prompts(all_samples, tokenizer)

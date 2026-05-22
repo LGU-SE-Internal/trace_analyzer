@@ -25,8 +25,9 @@ import re
 import textwrap
 import threading
 import tokenize
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rllm.environments.swe.swe import SWEEnv
@@ -42,6 +43,7 @@ _ast_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # Patch extraction — unified entry point for both datasets
 # ---------------------------------------------------------------------------
+
 
 def extract_non_test_patch(task: dict) -> str:
     """Return a unified-diff string of non-test changes for the given task.
@@ -161,6 +163,7 @@ def _is_test_file(path: str) -> bool:
 # Task normalisation — flatten SWE-bench verl wrapper
 # ---------------------------------------------------------------------------
 
+
 def normalize_task(task: dict) -> dict:
     """Ensure all dataset fields are top-level keys.
 
@@ -234,6 +237,7 @@ def _looks_like_bare_hash(s: str) -> bool:
 # 1. AST-based callable extraction
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class CallableInfo:
     """Metadata for a single callable extracted from AST."""
@@ -297,7 +301,7 @@ def extract_callables_from_ast(
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.ClassDef):
                 _visit(child, stack + [("class", child.name)])
-            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
                 qualified = _assemble_qualified_name(stack, child.name)
                 start = child.lineno
                 end = child.end_lineno or child.lineno
@@ -321,6 +325,7 @@ def extract_callables_from_ast(
 # ---------------------------------------------------------------------------
 # 2. AST-diff: find in-place modified callables
 # ---------------------------------------------------------------------------
+
 
 def find_modified_callables_from_sources(
     old_source: str,
@@ -351,12 +356,7 @@ def find_modified_callables_from_sources(
         info: CallableInfo,
         callables: dict[str, CallableInfo],
     ) -> list[CallableInfo]:
-        return [
-            child
-            for child in callables.values()
-            if info.start_line < child.start_line
-            and child.end_line <= info.end_line
-        ]
+        return [child for child in callables.values() if info.start_line < child.start_line and child.end_line <= info.end_line]
 
     def _own_source(
         info: CallableInfo,
@@ -366,9 +366,7 @@ def find_modified_callables_from_sources(
         own_lines = set(range(info.start_line, info.end_line + 1))
         for child in children:
             own_lines.difference_update(range(child.start_line, child.end_line + 1))
-        return "\n".join(
-            lines[i - 1] for i in sorted(own_lines) if 1 <= i <= len(lines)
-        )
+        return "\n".join(lines[i - 1] for i in sorted(own_lines) if 1 <= i <= len(lines))
 
     modified: list[dict] = []
     for qname, old_info in old_callables.items():
@@ -430,9 +428,7 @@ def find_modified_callables_from_task(task: dict) -> list[dict]:
             old_src = fd.get("old_file_content") or ""
             new_src = fd.get("new_file_content") or ""
             if old_src and new_src:
-                all_modified.extend(
-                    find_modified_callables_from_sources(old_src, new_src, path)
-                )
+                all_modified.extend(find_modified_callables_from_sources(old_src, new_src, path))
         return all_modified
 
     return []
@@ -441,6 +437,7 @@ def find_modified_callables_from_task(task: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 # 3. generate_tracer_module
 # ---------------------------------------------------------------------------
+
 
 def generate_tracer_module(repo_path: str, alt_path: str = "") -> str:
     """Generate _swe_fault_tracer.py source to be deployed in sandbox site-packages.
@@ -552,17 +549,18 @@ def generate_tracer_module(repo_path: str, alt_path: str = "") -> str:
 # 4. instrument_source
 # ---------------------------------------------------------------------------
 
+
 def _find_signature_colon(line_text: str) -> int:
     """Find the colon that terminates a one-line function signature."""
     paren_depth = 0
     for idx, ch in enumerate(line_text):
-        if ch == '(':
+        if ch == "(":
             paren_depth += 1
-        elif ch == ')':
+        elif ch == ")":
             paren_depth -= 1
-        elif ch == '#':
+        elif ch == "#":
             break
-        elif ch == ':' and paren_depth <= 0:
+        elif ch == ":" and paren_depth <= 0:
             return idx
     return -1
 
@@ -594,7 +592,7 @@ def _split_oneline_simple_suite(suite: str) -> list[str]:
             elif token.string in ")]}":
                 depth = max(0, depth - 1)
             elif token.string == ";" and depth == 0:
-                statement = suite[start_col:token.start[1]].strip()
+                statement = suite[start_col : token.start[1]].strip()
                 if statement:
                     statements.append(statement)
                 start_col = token.end[1]
@@ -621,11 +619,11 @@ def _rewrite_oneline_suite(lines: list[str], func_lineno: int) -> int:
     if colon_idx < 0:
         return 0
 
-    suite = line_text[colon_idx + 1:].strip()
+    suite = line_text[colon_idx + 1 :].strip()
     if not suite:
         return 0
 
-    signature = line_text[:colon_idx + 1].rstrip()
+    signature = line_text[: colon_idx + 1].rstrip()
     def_indent = line_text[: len(line_text) - len(line_text.lstrip())]
     body_indent = def_indent + "    "
     statements = _split_oneline_simple_suite(suite)
@@ -634,7 +632,7 @@ def _rewrite_oneline_suite(lines: list[str], func_lineno: int) -> int:
 
     rewritten = [signature + line_ending]
     rewritten.extend(f"{body_indent}{statement}{line_ending}" for statement in statements)
-    lines[line_idx:line_idx + 1] = rewritten
+    lines[line_idx : line_idx + 1] = rewritten
     return len(rewritten) - 1
 
 
@@ -651,7 +649,7 @@ def _find_function_node_at_line(source: str, callable_info: dict) -> ast.Functio
     target_qualified_name = callable_info.get("qualified_name")
 
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         if node.lineno != target_lineno:
             continue
@@ -686,21 +684,15 @@ def instrument_source(source: str, callables: list[dict]) -> str:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.ClassDef):
                 _visit(child, class_name=child.name)
-            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                qualified = (
-                    f"{class_name}.{child.name}" if class_name else child.name
-                )
+            elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                qualified = f"{class_name}.{child.name}" if class_name else child.name
                 nodes_by_key[(child.lineno, qualified)] = child
                 nodes_by_key[(child.lineno, child.name)] = child
                 nodes_by_line.setdefault(child.lineno, []).append(child)
                 _visit(child, class_name=class_name)
 
     def _is_docstring_stmt(node: ast.AST) -> bool:
-        return (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        )
+        return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
 
     def _line_ending(line: str) -> str:
         if line.endswith("\r\n"):
@@ -752,9 +744,7 @@ def instrument_source(source: str, callables: list[dict]) -> str:
 
             if _is_docstring_stmt(first_stmt):
                 doc_end_col = first_stmt.end_col_offset or first_stmt.col_offset
-                doc_text = line_without_ending[
-                    first_stmt.col_offset : doc_end_col
-                ].lstrip()
+                doc_text = line_without_ending[first_stmt.col_offset : doc_end_col].lstrip()
                 remainder = line_without_ending[doc_end_col:].lstrip()
                 if remainder.startswith(";"):
                     remainder = remainder[1:].lstrip()
@@ -780,13 +770,7 @@ def instrument_source(source: str, callables: list[dict]) -> str:
         # Wrap in try/except so import or trace failures don't crash the
         # instrumented function — the function must still behave normally
         # (tests should fail for the original bug, not our instrumentation).
-        trace_line = (
-            f'{body_indent}try:\n'
-            f'{body_indent}    import _swe_fault_tracer as _ft; '
-            f'_ft.trace("{c["qualified_name"]}", "{c["file_path"]}", {c["start_line"]})\n'
-            f'{body_indent}except Exception:\n'
-            f'{body_indent}    pass\n'
-        )
+        trace_line = f'{body_indent}try:\n{body_indent}    import _swe_fault_tracer as _ft; _ft.trace("{c["qualified_name"]}", "{c["file_path"]}", {c["start_line"]})\n{body_indent}except Exception:\n{body_indent}    pass\n'
 
         lines.insert(insert_idx, trace_line)
 
@@ -797,7 +781,8 @@ def instrument_source(source: str, callables: list[dict]) -> str:
 # 5. instrument_sandbox
 # ---------------------------------------------------------------------------
 
-def _read_sandbox_file(env: "SWEEnv", full_path: str, b64_chunk_lines: int = 50) -> tuple[str, int]:
+
+def _read_sandbox_file(env: SWEEnv, full_path: str, b64_chunk_lines: int = 50) -> tuple[str, int]:
     """Read a file from the sandbox without ARL gateway output truncation.
 
     Plain ``cat`` of large files is truncated by the gateway response size
@@ -844,9 +829,13 @@ def _read_sandbox_file(env: "SWEEnv", full_path: str, b64_chunk_lines: int = 50)
         actual_lines = chunk_b64.count("\n") + (1 if chunk_b64 and not chunk_b64.endswith("\n") else 0)
         if actual_lines < expected_lines:
             logger.warning(
-                "Gateway truncation at lines %d-%d of %s: got %d/%d lines (%d bytes). "
-                "Retrying with smaller chunks.",
-                start, end, full_path, actual_lines, expected_lines, len(chunk_b64),
+                "Gateway truncation at lines %d-%d of %s: got %d/%d lines (%d bytes). Retrying with smaller chunks.",
+                start,
+                end,
+                full_path,
+                actual_lines,
+                expected_lines,
+                len(chunk_b64),
             )
             # Retry the entire file with half-sized chunks
             env._run(f"rm -f {B64_TMP}")
@@ -870,7 +859,9 @@ def _read_sandbox_file(env: "SWEEnv", full_path: str, b64_chunk_lines: int = 50)
     if expected_bytes >= 0 and len(content) != expected_bytes:
         logger.warning(
             "Size mismatch for %s: expected %d bytes, got %d. Retrying with smaller chunks.",
-            full_path, expected_bytes, len(content),
+            full_path,
+            expected_bytes,
+            len(content),
         )
         if b64_chunk_lines > 10:
             return _read_sandbox_file(env, full_path, b64_chunk_lines=b64_chunk_lines // 2)
@@ -934,7 +925,7 @@ def _get_new_contents_from_task(
 
 
 def _get_new_contents_via_sandbox(
-    env: "SWEEnv",
+    env: SWEEnv,
     patch_text: str,
     files: set[str],
 ) -> dict[str, str]:
@@ -964,7 +955,7 @@ def _get_new_contents_via_sandbox(
 
 
 def instrument_sandbox(
-    env: "SWEEnv",
+    env: SWEEnv,
     modified_callables: list[dict],
 ) -> list[dict]:
     """Orchestrate fault tracing instrumentation in the sandbox.
@@ -992,9 +983,7 @@ def instrument_sandbox(
         callables_by_file.setdefault(c["file_path"], []).append(c)
 
     # 1. Find site-packages path & deploy tracer module
-    site_output, site_err = env._run(
-        "python -c \"import site; print(site.getsitepackages()[0])\""
-    )
+    site_output, site_err = env._run('python -c "import site; print(site.getsitepackages()[0])"')
     site_packages = site_output.strip().splitlines()[0].strip()
     if not site_packages or "Error" in str(site_err):
         logger.warning("Failed to find site-packages: %s %s", site_output, site_err)
@@ -1006,13 +995,13 @@ def instrument_sandbox(
     env._run(f"printf '%s' '{tracer_b64}' | base64 -d > {tracer_dest}")
 
     # Verify tracer is importable in the sandbox execution context
-    verify_out, verify_err = env._run(
-        "python -c \"import _swe_fault_tracer; print('OK')\""
-    )
+    verify_out, verify_err = env._run("python -c \"import _swe_fault_tracer; print('OK')\"")
     if "OK" not in verify_out:
         logger.warning(
             "Tracer module not importable (deployed to %s): %s %s",
-            tracer_dest, verify_out, verify_err,
+            tracer_dest,
+            verify_out,
+            verify_err,
         )
         return []
 
@@ -1036,16 +1025,19 @@ def instrument_sandbox(
         for c in callables:
             sb_info = sandbox_callables.get(c["qualified_name"])
             if sb_info is not None:
-                relocated.append({
-                    **c,
-                    "start_line": sb_info.start_line,
-                    "end_line": sb_info.end_line,
-                })
+                relocated.append(
+                    {
+                        **c,
+                        "start_line": sb_info.start_line,
+                        "end_line": sb_info.end_line,
+                    }
+                )
             else:
                 logger.warning(
-                    "Callable %s not found in sandbox source %s (sandbox has %d lines, "
-                    "expected line %d). Skipping.",
-                    c["qualified_name"], file_path, len(old_source.splitlines()),
+                    "Callable %s not found in sandbox source %s (sandbox has %d lines, expected line %d). Skipping.",
+                    c["qualified_name"],
+                    file_path,
+                    len(old_source.splitlines()),
                     c["start_line"],
                 )
         if not relocated:
@@ -1078,9 +1070,7 @@ def instrument_sandbox(
         instr_b64 = base64.b64encode(instrumented.encode()).decode()
         chunk_size = 65536
         if len(instr_b64) <= chunk_size:
-            env._run(
-                f"printf '%s' '{instr_b64}' | base64 -d > {full_path}"
-            )
+            env._run(f"printf '%s' '{instr_b64}' | base64 -d > {full_path}")
         else:
             env._run(f": > {full_path}")
             for i in range(0, len(instr_b64), chunk_size):
@@ -1098,6 +1088,7 @@ def instrument_sandbox(
 # ---------------------------------------------------------------------------
 # 6. parse_fault_traces
 # ---------------------------------------------------------------------------
+
 
 def parse_fault_traces(
     raw_output: str,
@@ -1121,9 +1112,7 @@ def parse_fault_traces(
     # Build line-range lookup for patched detection
     patched_ranges: dict[str, list[tuple[int, int, str]]] = {}
     for c in modified_callables:
-        patched_ranges.setdefault(c["file_path"], []).append(
-            (c["start_line"], c["end_line"], c["qualified_name"])
-        )
+        patched_ranges.setdefault(c["file_path"], []).append((c["start_line"], c["end_line"], c["qualified_name"]))
 
     traces: list[list[dict]] = []
 
@@ -1136,7 +1125,7 @@ def parse_fault_traces(
     )
 
     for match in pattern.finditer(raw_output):
-        callable_name = match.group(1)
+        match.group(1)
         # groups 2, 3 (file, lineno) available for future use
         frames_text = match.group(4).strip()
 
@@ -1181,14 +1170,16 @@ def parse_fault_traces(
                         qualified = qname
                         break
 
-            frames.append({
-                "file_path": rel_path,
-                "line_no": frame_lineno,
-                "func_name": frame_func,
-                "qualified_name": qualified,
-                "line_content": frame_content,
-                "is_patched": is_patched,
-            })
+            frames.append(
+                {
+                    "file_path": rel_path,
+                    "line_no": frame_lineno,
+                    "func_name": frame_func,
+                    "qualified_name": qualified,
+                    "line_content": frame_content,
+                    "is_patched": is_patched,
+                }
+            )
 
         if frames:
             has_patched = any(f["is_patched"] for f in frames)
@@ -1207,7 +1198,7 @@ TRACE_FILE_PATH = "/tmp/_swe_fault_traces.jsonl"
 
 
 def parse_fault_traces_from_file(
-    env: "SWEEnv",
+    env: SWEEnv,
     modified_callables: list[dict],
     repo_path: str,
     alt_path: str = "",
@@ -1239,9 +1230,7 @@ def parse_fault_traces_from_file(
     for c in modified_callables:
         start = c.get("instr_start_line", c["start_line"])
         end = c.get("instr_end_line", c["end_line"])
-        patched_ranges.setdefault(c["file_path"], []).append(
-            (start, end, c["qualified_name"])
-        )
+        patched_ranges.setdefault(c["file_path"], []).append((start, end, c["qualified_name"]))
 
     traces: list[list[dict]] = []
 
@@ -1282,14 +1271,16 @@ def parse_fault_traces_from_file(
                         is_patched = True
                         break
 
-            frames.append({
-                "file_path": rel_path,
-                "line_no": frame_lineno,
-                "func_name": frame_func,
-                "qualified_name": qualified,
-                "line_content": frame_code,
-                "is_patched": is_patched,
-            })
+            frames.append(
+                {
+                    "file_path": rel_path,
+                    "line_no": frame_lineno,
+                    "func_name": frame_func,
+                    "qualified_name": qualified,
+                    "line_content": frame_code,
+                    "is_patched": is_patched,
+                }
+            )
 
         if frames and any(fr["is_patched"] for fr in frames):
             traces.append(frames)
@@ -1301,6 +1292,7 @@ def parse_fault_traces_from_file(
 # 7. aggregate_traces
 # ---------------------------------------------------------------------------
 
+
 def aggregate_traces(traces: list[list[dict]]) -> list[list[dict]]:
     """Deduplicate and keep only maximal traces.
 
@@ -1311,9 +1303,7 @@ def aggregate_traces(traces: list[list[dict]]) -> list[list[dict]]:
         return []
 
     def _trace_key(trace: list[dict]) -> tuple:
-        return tuple(
-            (f["file_path"], f["line_no"], f["func_name"]) for f in trace
-        )
+        return tuple((f["file_path"], f["line_no"], f["func_name"]) for f in trace)
 
     # Deduplicate exact matches
     seen_keys: set[tuple] = set()
@@ -1356,6 +1346,7 @@ def aggregate_traces(traces: list[list[dict]]) -> list[list[dict]]:
 # ---------------------------------------------------------------------------
 # 8. build_call_graph_from_traces
 # ---------------------------------------------------------------------------
+
 
 def build_call_graph_from_traces(
     traces: list[list[dict]],
@@ -1406,9 +1397,7 @@ def build_call_graph_from_traces(
 
     for trace in traces:
         # Find patched frame indices in this trace
-        patched_indices = [
-            j for j, frame in enumerate(trace) if frame.get("is_patched", False)
-        ]
+        patched_indices = [j for j, frame in enumerate(trace) if frame.get("is_patched", False)]
         if not patched_indices:
             continue
 
@@ -1427,9 +1416,7 @@ def build_call_graph_from_traces(
                     }
                 else:
                     # Keep minimum hop distance
-                    node_info[node_key]["hop_distance"] = min(
-                        node_info[node_key]["hop_distance"], hop
-                    )
+                    node_info[node_key]["hop_distance"] = min(node_info[node_key]["hop_distance"], hop)
 
     if not node_info:
         return {
@@ -1472,11 +1459,7 @@ def build_call_graph_from_traces(
     # the function body.  We find the enclosing callable by checking which
     # CallableInfo range contains that line, then update start_line/end_line.
     if file_reader:
-        files_needed = {
-            node["file_path"]
-            for nk, node in call_graph_nodes.items()
-            if nk not in patched_keys
-        }
+        files_needed = {node["file_path"] for nk, node in call_graph_nodes.items() if nk not in patched_keys}
         file_callables: dict[str, dict] = {}
         for fp in files_needed:
             source = file_reader(fp)
@@ -1495,10 +1478,7 @@ def build_call_graph_from_traces(
                     break
 
     # Strip internal instrumentation keys from output
-    clean_callables = [
-        {k: v for k, v in mc.items() if not k.startswith("instr_")}
-        for mc in modified_callables
-    ]
+    clean_callables = [{k: v for k, v in mc.items() if not k.startswith("instr_")} for mc in modified_callables]
 
     return {
         "call_graph_nodes": call_graph_nodes,

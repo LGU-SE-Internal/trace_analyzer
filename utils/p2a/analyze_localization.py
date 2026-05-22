@@ -35,9 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -73,20 +71,12 @@ def extract_assistant_responses(trajectory) -> list[str]:
     """
     if isinstance(trajectory, list):
         # Chat completion format: list of messages
-        return [
-            msg.get("content", "")
-            for msg in trajectory
-            if msg.get("role") == "assistant" and msg.get("content")
-        ]
+        return [msg.get("content", "") for msg in trajectory if msg.get("role") == "assistant" and msg.get("content")]
     elif isinstance(trajectory, dict):
         if "steps" in trajectory:
             return [s.get("response", "") for s in trajectory["steps"]]
         if "messages" in trajectory:
-            return [
-                msg.get("content", "")
-                for msg in trajectory["messages"]
-                if msg.get("role") == "assistant" and msg.get("content")
-            ]
+            return [msg.get("content", "") for msg in trajectory["messages"] if msg.get("role") == "assistant" and msg.get("content")]
         # Single trajectory with "response" key
         if "response" in trajectory:
             return [trajectory["response"]]
@@ -232,8 +222,7 @@ def main():
     parser = argparse.ArgumentParser(description="Analyze fault localization quality of SWE agent trajectories")
     parser.add_argument("--trajectories", required=True, help="Path to trajectory JSONL file")
     parser.add_argument("--bonus_map_dir", required=True, help="Path to precomputed bonus maps directory")
-    parser.add_argument("--tracking_mode", default="view_only", choices=["view_only", "view_and_bash"],
-                       help="Observation tracking mode (default: view_only)")
+    parser.add_argument("--tracking_mode", default="view_only", choices=["view_only", "view_and_bash"], help="Observation tracking mode (default: view_only)")
     parser.add_argument("--output", default=None, help="Output JSON path for metrics (default: stdout)")
     parser.add_argument("--per_instance", action="store_true", help="Also output per-instance results")
     parser.add_argument("--wandb_project", default=None, help="W&B project name for logging")
@@ -283,14 +272,14 @@ def main():
     print()
 
     if "distance_mean" in metrics:
-        print(f"  Distance distribution (on-graph steps):")
+        print("  Distance distribution (on-graph steps):")
         print(f"    Mean distance: {metrics['distance_mean']:.4f} +/- {metrics['distance_std']:.4f}")
         total_on = metrics["total_on_graph_steps"]
-        print(f"    d=0 (root cause): {metrics['dist_d0']} ({metrics['dist_d0']/max(total_on,1)*100:.1f}%)")
-        print(f"    d in (0, 0.25):   {metrics['dist_d0_25']} ({metrics['dist_d0_25']/max(total_on,1)*100:.1f}%)")
-        print(f"    d in [0.25, 0.5): {metrics['dist_d25_50']} ({metrics['dist_d25_50']/max(total_on,1)*100:.1f}%)")
-        print(f"    d in [0.5, 0.75): {metrics['dist_d50_75']} ({metrics['dist_d50_75']/max(total_on,1)*100:.1f}%)")
-        print(f"    d in [0.75, 1.0]: {metrics['dist_d75_100']} ({metrics['dist_d75_100']/max(total_on,1)*100:.1f}%)")
+        print(f"    d=0 (root cause): {metrics['dist_d0']} ({metrics['dist_d0'] / max(total_on, 1) * 100:.1f}%)")
+        print(f"    d in (0, 0.25):   {metrics['dist_d0_25']} ({metrics['dist_d0_25'] / max(total_on, 1) * 100:.1f}%)")
+        print(f"    d in [0.25, 0.5): {metrics['dist_d25_50']} ({metrics['dist_d25_50'] / max(total_on, 1) * 100:.1f}%)")
+        print(f"    d in [0.5, 0.75): {metrics['dist_d50_75']} ({metrics['dist_d50_75'] / max(total_on, 1) * 100:.1f}%)")
+        print(f"    d in [0.75, 1.0]: {metrics['dist_d75_100']} ({metrics['dist_d75_100'] / max(total_on, 1) * 100:.1f}%)")
 
     # Save output
     if args.output:
@@ -308,6 +297,7 @@ def main():
     if args.wandb_project:
         try:
             import wandb
+
             wandb.init(
                 project=args.wandb_project,
                 name=args.wandb_run_name or "localization-analysis",
@@ -317,7 +307,7 @@ def main():
                     "tracking_mode": args.tracking_mode,
                 },
             )
-            wandb.log({f"loc/{k}": v for k, v in metrics.items() if isinstance(v, (int, float))})
+            wandb.log({f"loc/{k}": v for k, v in metrics.items() if isinstance(v, int | float)})
             wandb.finish()
             print(f"\n  Logged to W&B project: {args.wandb_project}")
         except ImportError:

@@ -12,7 +12,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -38,6 +38,7 @@ class ExperimentUploader:
     def _auto_login(self):
         """Auto-login with default credentials if no token found."""
         import os
+
         username = os.environ.get("EXPDATA_USER", "admin")
         password = os.environ.get("EXPDATA_PASSWORD", "42")
         try:
@@ -59,12 +60,13 @@ class ExperimentUploader:
             logger.warning(f"Auto-login failed: {e}")
 
     @staticmethod
-    def _load_token(token_path: str) -> Optional[str]:
+    def _load_token(token_path: str) -> str | None:
         p = Path(token_path)
         if p.exists():
             return p.read_text().strip()
         # Also check env var
         import os
+
         return os.environ.get("EXPDATA_TOKEN")
 
     def _url(self, path: str) -> str:
@@ -80,13 +82,13 @@ class ExperimentUploader:
         self,
         name: str,
         type: str,
-        model: Optional[str] = None,
-        backend: Optional[str] = None,
-        scaffold: Optional[str] = None,
-        dataset: Optional[str] = None,
-        mode: Optional[str] = None,
-        n_samples: Optional[int] = None,
-        config: Optional[dict] = None,
+        model: str | None = None,
+        backend: str | None = None,
+        scaffold: str | None = None,
+        dataset: str | None = None,
+        mode: str | None = None,
+        n_samples: int | None = None,
+        config: dict | None = None,
     ) -> int:
         """Create an experiment record. Returns experiment ID."""
         payload = {"name": name, "type": type}
@@ -160,7 +162,7 @@ class ExperimentUploader:
             )
         return self._check(resp)["inserted"]
 
-    def mark_completed(self, exp_id: int, summary: Optional[dict] = None) -> None:
+    def mark_completed(self, exp_id: int, summary: dict | None = None) -> None:
         """Mark experiment as completed with optional summary."""
         payload: dict[str, Any] = {"status": "completed"}
         if summary:

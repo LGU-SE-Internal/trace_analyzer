@@ -7,21 +7,20 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
 
 import aiosqlite
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-from utils.expdata.schema import get_db, init_db
+from utils.expdata.schema import init_db
 
 logger = logging.getLogger("expdata")
 
 DB_PATH = os.environ.get("EXPDATA_DB_PATH", "/data/expdata.db")
 DASHBOARD_PATH = os.environ.get("EXPDATA_DASHBOARD_PATH", str(Path(__file__).parent.parent.parent / "expdata_dashboard.html"))
 
-_db: Optional[aiosqlite.Connection] = None
+_db: aiosqlite.Connection | None = None
 
 
 @asynccontextmanager
@@ -48,7 +47,8 @@ def db() -> aiosqlite.Connection:
 # Auth — simple username/password, optional for all endpoints
 # ---------------------------------------------------------------------------
 
-async def require_user(authorization: Optional[str] = Header(None)) -> str:
+
+async def require_user(authorization: str | None = Header(None)) -> str:
     """Require valid Bearer token. Raises 401 if missing or invalid."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Authentication required. Login first: POST /api/v1/auth/login")
@@ -95,16 +95,17 @@ async def whoami(user: str = Depends(require_user)):
 # Experiments CRUD
 # ---------------------------------------------------------------------------
 
+
 class CreateExperimentRequest(BaseModel):
     name: str
     type: str  # eval | collection
-    model: Optional[str] = None
-    backend: Optional[str] = None
-    scaffold: Optional[str] = None
-    dataset: Optional[str] = None
-    mode: Optional[str] = None
-    n_samples: Optional[int] = None
-    config_json: Optional[str] = None
+    model: str | None = None
+    backend: str | None = None
+    scaffold: str | None = None
+    dataset: str | None = None
+    mode: str | None = None
+    n_samples: int | None = None
+    config_json: str | None = None
 
 
 @app.post("/api/v1/experiments")
@@ -122,9 +123,9 @@ async def create_experiment(req: CreateExperimentRequest, user: str = Depends(re
 
 @app.get("/api/v1/experiments")
 async def list_experiments(
-    type: Optional[str] = None,
-    model: Optional[str] = None,
-    status: Optional[str] = None,
+    type: str | None = None,
+    model: str | None = None,
+    status: str | None = None,
     limit: int = Query(50, le=200),
     offset: int = 0,
     user: str = Depends(require_user),
@@ -164,8 +165,8 @@ async def get_experiment(exp_id: int, user: str = Depends(require_user)):
 
 
 class PatchExperimentRequest(BaseModel):
-    status: Optional[str] = None
-    summary_json: Optional[str] = None
+    status: str | None = None
+    summary_json: str | None = None
 
 
 @app.patch("/api/v1/experiments/{exp_id}")
@@ -196,6 +197,7 @@ async def delete_experiment(exp_id: int, user: str = Depends(require_user)):
 # Bulk Upload Endpoints
 # ---------------------------------------------------------------------------
 
+
 async def _ensure_experiment(exp_id: int):
     cursor = await db().execute("SELECT id FROM experiments WHERE id = ?", (exp_id,))
     if not await cursor.fetchone():
@@ -211,11 +213,18 @@ async def upload_eval_results(exp_id: int, request: Request, user: str = Depends
         if not line.strip():
             continue
         r = json.loads(line)
-        rows.append((
-            exp_id, r.get("instance_id", ""), r.get("repo"), r.get("uid"),
-            r.get("sample_idx", 0), r.get("reward"), r.get("termination_reason"),
-            json.dumps({k: v for k, v in r.items() if k not in ("instance_id", "repo", "uid", "sample_idx", "reward", "termination_reason")}),
-        ))
+        rows.append(
+            (
+                exp_id,
+                r.get("instance_id", ""),
+                r.get("repo"),
+                r.get("uid"),
+                r.get("sample_idx", 0),
+                r.get("reward"),
+                r.get("termination_reason"),
+                json.dumps({k: v for k, v in r.items() if k not in ("instance_id", "repo", "uid", "sample_idx", "reward", "termination_reason")}),
+            )
+        )
     await db().executemany(
         "INSERT INTO eval_results (experiment_id, instance_id, repo, uid, sample_idx, reward, termination_reason, extra_json) VALUES (?,?,?,?,?,?,?,?)",
         rows,
@@ -233,11 +242,18 @@ async def upload_trajectories(exp_id: int, request: Request, user: str = Depends
         if not line.strip():
             continue
         r = json.loads(line)
-        rows.append((
-            exp_id, r.get("instance_id", ""), r.get("sample_idx", 0),
-            r.get("reward"), r.get("termination_reason"), r.get("n_steps"),
-            json.dumps(r.get("messages", [])), r.get("role", "primary"),
-        ))
+        rows.append(
+            (
+                exp_id,
+                r.get("instance_id", ""),
+                r.get("sample_idx", 0),
+                r.get("reward"),
+                r.get("termination_reason"),
+                r.get("n_steps"),
+                json.dumps(r.get("messages", [])),
+                r.get("role", "primary"),
+            )
+        )
     await db().executemany(
         "INSERT INTO trajectories (experiment_id, instance_id, sample_idx, reward, termination_reason, n_steps, messages_json, role) VALUES (?,?,?,?,?,?,?,?)",
         rows,
@@ -294,7 +310,9 @@ async def upload_collection(exp_id: int, file: UploadFile, user: str = Depends(r
     """Upload collection parquet — parse and store as trajectories."""
     await _ensure_experiment(exp_id)
     import io
+
     import pandas as pd
+
     content = await file.read()
     df = pd.read_parquet(io.BytesIO(content))
     rows = []
@@ -308,11 +326,18 @@ async def upload_collection(exp_id: int, file: UploadFile, user: str = Depends(r
         if "chosen" in df.columns and "rejected" in df.columns:
             # DPO format — handle differently
             pass
-        rows.append((
-            exp_id, row.get("instance_id", ""), 0,
-            row.get("reward"), row.get("termination_reason"),
-            None, messages_json, role,
-        ))
+        rows.append(
+            (
+                exp_id,
+                row.get("instance_id", ""),
+                0,
+                row.get("reward"),
+                row.get("termination_reason"),
+                None,
+                messages_json,
+                role,
+            )
+        )
     if rows:
         await db().executemany(
             "INSERT INTO trajectories (experiment_id, instance_id, sample_idx, reward, termination_reason, n_steps, messages_json, role) VALUES (?,?,?,?,?,?,?,?)",
@@ -326,11 +351,12 @@ async def upload_collection(exp_id: int, file: UploadFile, user: str = Depends(r
 # Query Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/v1/experiments/{exp_id}/results")
 async def get_results(
     exp_id: int,
-    instance_id: Optional[str] = None,
-    reward: Optional[float] = None,
+    instance_id: str | None = None,
+    reward: float | None = None,
     limit: int = Query(100, le=1000),
     offset: int = 0,
     user: str = Depends(require_user),
@@ -359,8 +385,8 @@ async def get_results(
 @app.get("/api/v1/experiments/{exp_id}/trajectories")
 async def list_trajectories(
     exp_id: int,
-    instance_id: Optional[str] = None,
-    role: Optional[str] = None,
+    instance_id: str | None = None,
+    role: str | None = None,
     limit: int = Query(50, le=200),
     offset: int = 0,
     user: str = Depends(require_user),
@@ -388,9 +414,7 @@ async def list_trajectories(
 
 @app.get("/api/v1/experiments/{exp_id}/trajectories/{tid}")
 async def get_trajectory(exp_id: int, tid: int, user: str = Depends(require_user)):
-    cursor = await db().execute(
-        "SELECT * FROM trajectories WHERE id = ? AND experiment_id = ?", (tid, exp_id)
-    )
+    cursor = await db().execute("SELECT * FROM trajectories WHERE id = ? AND experiment_id = ?", (tid, exp_id))
     row = await cursor.fetchone()
     if not row:
         raise HTTPException(404, "Trajectory not found")
@@ -429,9 +453,7 @@ async def get_test_output(exp_id: int, instance_id: str, user: str = Depends(req
 
 @app.get("/api/v1/experiments/{exp_id}/localization")
 async def get_localization(exp_id: int, user: str = Depends(require_user)):
-    cursor = await db().execute(
-        "SELECT * FROM localization_analyses WHERE experiment_id = ?", (exp_id,)
-    )
+    cursor = await db().execute("SELECT * FROM localization_analyses WHERE experiment_id = ?", (exp_id,))
     row = await cursor.fetchone()
     if not row:
         raise HTTPException(404, "Localization analysis not found")
@@ -447,15 +469,14 @@ async def get_localization(exp_id: int, user: str = Depends(require_user)):
 # Comparison Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/v1/compare")
 async def compare_experiments(ids: str = Query(..., description="Comma-separated experiment IDs"), user: str = Depends(require_user)):
     exp_ids = [int(x.strip()) for x in ids.split(",") if x.strip()]
     if not exp_ids or len(exp_ids) > 10:
         raise HTTPException(400, "Provide 1-10 experiment IDs")
     placeholders = ",".join("?" * len(exp_ids))
-    cursor = await db().execute(
-        f"SELECT * FROM experiments WHERE id IN ({placeholders})", exp_ids
-    )
+    cursor = await db().execute(f"SELECT * FROM experiments WHERE id IN ({placeholders})", exp_ids)
     experiments = [dict(r) for r in await cursor.fetchall()]
 
     # Get per-experiment stats
@@ -489,6 +510,7 @@ async def instance_history(instance_id: str, user: str = Depends(require_user)):
 # Health check (no auth required)
 # ---------------------------------------------------------------------------
 
+
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
@@ -497,6 +519,7 @@ async def healthz():
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
+
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():

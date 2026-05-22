@@ -170,16 +170,18 @@ def results_from_trajectories(trajectories: list) -> list[dict]:
     records = []
     for traj in trajectories:
         task = traj.task or {}
-        records.append({
-            "uid": task.get("_uid", traj.uid),
-            "data_source": task.get("data_source", "swe"),
-            "reward": float(traj.reward) if traj.reward is not None else 0.0,
-            "sample_idx": task.get("_sample_idx", 0),
-            "n_samples": task.get("_n_samples", 1),
-            "instance_id": task.get("instance_id", ""),
-            "repo": task.get("repo", task.get("repo_name", "")),
-            "termination_reason": traj.info.get("termination_reason", "UNKNOWN"),
-        })
+        records.append(
+            {
+                "uid": task.get("_uid", traj.uid),
+                "data_source": task.get("data_source", "swe"),
+                "reward": float(traj.reward) if traj.reward is not None else 0.0,
+                "sample_idx": task.get("_sample_idx", 0),
+                "n_samples": task.get("_n_samples", 1),
+                "instance_id": task.get("instance_id", ""),
+                "repo": task.get("repo", task.get("repo_name", "")),
+                "termination_reason": traj.info.get("termination_reason", "UNKNOWN"),
+            }
+        )
     return records
 
 
@@ -197,6 +199,7 @@ def run_report(output_path: str):
 # =========================================================================
 # Dry-run mode: run harness on unmodified code, no model needed
 # =========================================================================
+
 
 async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output_dir: str):
     """Run SWE-bench / R2E harness on unmodified code to capture baseline test outputs.
@@ -296,6 +299,7 @@ async def run_dry_run(tasks: list[dict], env_args: dict, n_parallel: int, output
 # Regular eval mode: agent + environment interaction
 # =========================================================================
 
+
 def run_agent_eval(args, tasks):
     """Run agentic evaluation using AgentExecutionEngine."""
     from transformers import AutoTokenizer
@@ -369,6 +373,7 @@ def run_agent_eval(args, tasks):
 # P2A Localization Analysis (post-eval)
 # =========================================================================
 
+
 def run_localization_analysis(trajectories, bonus_map_dir: str, tracking_mode: str, output_dir: str):
     """Run Section 6.3 localization analysis on eval trajectories.
 
@@ -417,17 +422,19 @@ def run_localization_analysis(trajectories, bonus_map_dir: str, tracking_mode: s
         if min_distance == float("inf"):
             min_distance = -1.0
 
-        per_instance.append({
-            "instance_id": instance_id,
-            "reward": float(traj.reward) if traj.reward is not None else 0.0,
-            "n_steps": n_steps,
-            "n_view_steps": n_view_steps,
-            "n_on_graph": n_on_graph,
-            "first_root_cause_step": first_root_cause_step,
-            "min_distance": min_distance,
-            "distances": distances,
-            "has_bonus_map": bonus_map is not None and bonus_map.get("traceable", False),
-        })
+        per_instance.append(
+            {
+                "instance_id": instance_id,
+                "reward": float(traj.reward) if traj.reward is not None else 0.0,
+                "n_steps": n_steps,
+                "n_view_steps": n_view_steps,
+                "n_on_graph": n_on_graph,
+                "first_root_cause_step": first_root_cause_step,
+                "min_distance": min_distance,
+                "distances": distances,
+                "has_bonus_map": bonus_map is not None and bonus_map.get("traceable", False),
+            }
+        )
 
     # Aggregate metrics
     total_steps = sum(r["n_steps"] for r in per_instance)
@@ -451,6 +458,7 @@ def run_localization_analysis(trajectories, bonus_map_dir: str, tracking_mode: s
 
     if steps_to_root:
         import numpy as np
+
         arr = np.array(steps_to_root)
         metrics["avg_steps_to_root_cause"] = float(arr.mean())
         metrics["median_steps_to_root_cause"] = float(np.median(arr))
@@ -459,6 +467,7 @@ def run_localization_analysis(trajectories, bonus_map_dir: str, tracking_mode: s
 
     if all_distances:
         import numpy as np
+
         d_arr = np.array(all_distances)
         metrics["distance_mean"] = float(d_arr.mean())
         metrics["distance_std"] = float(d_arr.std())
@@ -487,9 +496,7 @@ def run_localization_analysis(trajectories, bonus_map_dir: str, tracking_mode: s
     # Save per-instance analysis
     loc_output = os.path.join(output_dir, "localization_analysis.json")
     os.makedirs(output_dir, exist_ok=True)
-    save_data = {"aggregate": metrics, "per_instance": [
-        {k: v for k, v in r.items() if k != "distances"} for r in per_instance
-    ]}
+    save_data = {"aggregate": metrics, "per_instance": [{k: v for k, v in r.items() if k != "distances"} for r in per_instance]}
     with open(loc_output, "w") as f:
         json.dump(save_data, f, indent=2)
     print(f"  Saved to {loc_output}")
@@ -500,6 +507,7 @@ def run_localization_analysis(trajectories, bonus_map_dir: str, tracking_mode: s
 # =========================================================================
 # CLI
 # =========================================================================
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Standalone SWE-Bench / R2E-Gym Evaluation")
@@ -575,7 +583,7 @@ def main():
     # Load and prepare tasks
     base_tasks = load_tasks(args)
     if args.max_tasks:
-        base_tasks = base_tasks[:args.max_tasks]
+        base_tasks = base_tasks[: args.max_tasks]
         print(f"Limiting to first {args.max_tasks} tasks")
 
     if args.dry_run:
@@ -602,9 +610,7 @@ def main():
         print(f"  Parallel: {args.n_parallel}")
         print()
 
-        results, test_outputs, fault_traces_map = asyncio.run(
-            run_dry_run(tasks, env_args, args.n_parallel, output_dir)
-        )
+        results, test_outputs, fault_traces_map = asyncio.run(run_dry_run(tasks, env_args, args.n_parallel, output_dir))
 
         # Save results
         output_path = args.output or os.path.join(output_dir, "dry_run.jsonl")
@@ -676,11 +682,14 @@ def main():
 
             solved = sum(1 for r in results if r.get("reward", 0) > 0) if results else 0
             total = len(results) if results else 0
-            uploader.mark_completed(exp_id, {
-                "total": total,
-                "solved": solved,
-                "solve_rate": solved / max(total, 1),
-            })
+            uploader.mark_completed(
+                exp_id,
+                {
+                    "total": total,
+                    "solved": solved,
+                    "solve_rate": solved / max(total, 1),
+                },
+            )
             logger.info(f"Upload complete: experiment {exp_id}")
         except Exception as e:
             logger.warning(f"Upload failed (non-fatal): {e}")

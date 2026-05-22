@@ -19,7 +19,7 @@ SWE_DATASETS = [
     # "R2E-Gym/SWE-Bench-Lite",
     "R2E-Gym/SWE-Bench-Verified",
     # "r2e-edits/SweSmith-RL-Dataset",
-    "R2E-Gym/R2EGym-SFT-Trajectories"
+    "R2E-Gym/R2EGym-SFT-Trajectories",
 ]
 
 HARD_DIFFICULTIES = {"1-4 hours", ">4 hours"}

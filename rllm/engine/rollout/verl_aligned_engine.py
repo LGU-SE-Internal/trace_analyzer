@@ -20,11 +20,26 @@ logger = logging.getLogger(__name__)
 
 # Parameters accepted directly by the openai SDK's completions.create().
 # Non-standard params (e.g. top_k for vLLM/SGLang) must go through extra_body.
-_OPENAI_COMPLETION_PARAMS = frozenset({
-    "best_of", "echo", "frequency_penalty", "logit_bias", "logprobs",
-    "max_tokens", "n", "presence_penalty", "seed", "stop", "stream",
-    "stream_options", "suffix", "temperature", "top_p", "user",
-})
+_OPENAI_COMPLETION_PARAMS = frozenset(
+    {
+        "best_of",
+        "echo",
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "n",
+        "presence_penalty",
+        "seed",
+        "stop",
+        "stream",
+        "stream_options",
+        "suffix",
+        "temperature",
+        "top_p",
+        "user",
+    }
+)
 
 
 def _split_extra_body(params: dict) -> None:
@@ -52,7 +67,8 @@ class VerlAlignedEngine(RolloutEngine):
         self.model = model
         self.tokenizer = tokenizer
         self.chat_parser = ChatTemplateParser.get_parser(
-            tokenizer, disable_thinking=kwargs.get("disable_thinking", False),
+            tokenizer,
+            disable_thinking=kwargs.get("disable_thinking", False),
         )
         self.max_prompt_length = max_prompt_length
         self.max_response_length = max_response_length
@@ -122,7 +138,8 @@ class VerlAlignedEngine(RolloutEngine):
                 except Exception:
                     raw_text = response.choices[0].text
                     completion_ids = self.tokenizer.encode(
-                        raw_text, add_special_tokens=False,
+                        raw_text,
+                        add_special_tokens=False,
                     )
 
                 # ── 5. Enforce max_tokens (same as VerlEngine) ──
@@ -133,7 +150,8 @@ class VerlAlignedEngine(RolloutEngine):
 
                 # ── 6. Decode with skip_special_tokens=True (matches VerlEngine) ──
                 completion_text = self.tokenizer.decode(
-                    completion_ids, skip_special_tokens=True,
+                    completion_ids,
+                    skip_special_tokens=True,
                 )
 
                 # ── 7. Parse completion (same as VerlEngine) ──

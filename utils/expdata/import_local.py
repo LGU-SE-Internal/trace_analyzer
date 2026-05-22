@@ -80,7 +80,7 @@ def import_eval(uploader: ExperimentUploader, folder: Path, dry_run: bool = Fals
     trajectories = []
     has_trajectories = traj_file.exists()
     if has_trajectories:
-        logger.info(f"  Trajectories: chat_completions/eval.jsonl")
+        logger.info("  Trajectories: chat_completions/eval.jsonl")
         trajectories = parse_jsonl(traj_file)
         logger.info(f"  Parsed {len(trajectories)} trajectories")
 
@@ -112,27 +112,32 @@ def import_eval(uploader: ExperimentUploader, folder: Path, dry_run: bool = Fals
     # Upload trajectories (convert to expected format)
     if trajectories:
         traj_records = []
-        for i, (meta, msgs) in enumerate(zip(metadata, trajectories)):
+        for i, (meta, msgs) in enumerate(zip(metadata, trajectories, strict=False)):
             # msgs is a list of message dicts (the chat completion for this trajectory)
             messages = msgs if isinstance(msgs, list) else []
-            traj_records.append({
-                "instance_id": meta.get("instance_id", ""),
-                "sample_idx": meta.get("sample_idx", 0),
-                "reward": meta.get("reward"),
-                "termination_reason": meta.get("termination_reason", ""),
-                "n_steps": len([m for m in messages if m.get("role") == "assistant"]) if messages else 0,
-                "messages": messages,
-                "role": "primary",
-            })
+            traj_records.append(
+                {
+                    "instance_id": meta.get("instance_id", ""),
+                    "sample_idx": meta.get("sample_idx", 0),
+                    "reward": meta.get("reward"),
+                    "termination_reason": meta.get("termination_reason", ""),
+                    "n_steps": len([m for m in messages if m.get("role") == "assistant"]) if messages else 0,
+                    "messages": messages,
+                    "role": "primary",
+                }
+            )
         uploader.upload_trajectories(exp_id, traj_records)
         logger.info(f"  Uploaded {len(traj_records)} trajectories")
 
     # Mark completed
-    uploader.mark_completed(exp_id, {
-        "total": n_results,
-        "solved": solved,
-        "solve_rate": solved / max(n_results, 1),
-    })
+    uploader.mark_completed(
+        exp_id,
+        {
+            "total": n_results,
+            "solved": solved,
+            "solve_rate": solved / max(n_results, 1),
+        },
+    )
     logger.info(f"  Experiment #{exp_id} marked completed")
     return exp_id
 
@@ -156,7 +161,7 @@ def import_collection(uploader: ExperimentUploader, folder: Path, dry_run: bool 
     logger.info(f"  Total: {len(pos_entries)} pos + {len(neg_entries)} neg = {total} trajectories")
 
     if not total:
-        logger.warning(f"  No trajectories found, skipping")
+        logger.warning("  No trajectories found, skipping")
         return None
 
     if dry_run:
@@ -177,15 +182,17 @@ def import_collection(uploader: ExperimentUploader, folder: Path, dry_run: bool 
         records = []
         for entry in entries:
             msgs = entry.get("messages", [])
-            records.append({
-                "instance_id": entry.get("instance_id", ""),
-                "sample_idx": 0,
-                "reward": 1.0 if role == "chosen" else 0.0,
-                "termination_reason": entry.get("termination_reason", ""),
-                "n_steps": len([m for m in msgs if m.get("role") == "assistant"]),
-                "messages": msgs,
-                "role": role,
-            })
+            records.append(
+                {
+                    "instance_id": entry.get("instance_id", ""),
+                    "sample_idx": 0,
+                    "reward": 1.0 if role == "chosen" else 0.0,
+                    "termination_reason": entry.get("termination_reason", ""),
+                    "n_steps": len([m for m in msgs if m.get("role") == "assistant"]),
+                    "messages": msgs,
+                    "role": role,
+                }
+            )
         return records
 
     if pos_entries:
@@ -198,11 +205,14 @@ def import_collection(uploader: ExperimentUploader, folder: Path, dry_run: bool 
         uploader.upload_trajectories(exp_id, records)
         logger.info(f"  Uploaded {len(records)} negative trajectories")
 
-    uploader.mark_completed(exp_id, {
-        "pos": len(pos_entries),
-        "neg": len(neg_entries),
-        "instances": len({e.get("instance_id") for e in pos_entries + neg_entries}),
-    })
+    uploader.mark_completed(
+        exp_id,
+        {
+            "pos": len(pos_entries),
+            "neg": len(neg_entries),
+            "instances": len({e.get("instance_id") for e in pos_entries + neg_entries}),
+        },
+    )
     logger.info(f"  Experiment #{exp_id} marked completed")
     return exp_id
 
@@ -230,22 +240,24 @@ def import_rollout(uploader: "ExperimentUploader", folder: Path, dry_run: bool =
             else:
                 continue
             n_steps = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant")
-            all_trajectories.append({
-                "instance_id": f"rollout_{f.stem}_{i}",
-                "sample_idx": 0,
-                "reward": None,
-                "termination_reason": None,
-                "n_steps": n_steps,
-                "messages": messages,
-                "role": "primary",
-            })
+            all_trajectories.append(
+                {
+                    "instance_id": f"rollout_{f.stem}_{i}",
+                    "sample_idx": 0,
+                    "reward": None,
+                    "termination_reason": None,
+                    "n_steps": n_steps,
+                    "messages": messages,
+                    "role": "primary",
+                }
+            )
         logger.info(f"    {len(entries)} trajectories")
 
     total = len(all_trajectories)
     logger.info(f"  Total: {total} trajectories from {len(jsonl_files)} files")
 
     if not total:
-        logger.warning(f"  No trajectories found, skipping")
+        logger.warning("  No trajectories found, skipping")
         return None
 
     if dry_run:
@@ -265,17 +277,20 @@ def import_rollout(uploader: "ExperimentUploader", folder: Path, dry_run: bool =
     batch_size = 100
     uploaded = 0
     for i in range(0, total, batch_size):
-        batch = all_trajectories[i:i + batch_size]
+        batch = all_trajectories[i : i + batch_size]
         uploader.upload_trajectories(exp_id, batch)
         uploaded += len(batch)
         if uploaded % 500 == 0 or uploaded == total:
             logger.info(f"  Uploaded {uploaded}/{total} trajectories")
     logger.info(f"  Upload complete: {uploaded} trajectories")
 
-    uploader.mark_completed(exp_id, {
-        "total_trajectories": total,
-        "files": len(jsonl_files),
-    })
+    uploader.mark_completed(
+        exp_id,
+        {
+            "total_trajectories": total,
+            "files": len(jsonl_files),
+        },
+    )
     logger.info(f"  Experiment #{exp_id} marked completed")
     return exp_id
 
@@ -324,14 +339,17 @@ def main():
             kwargs["token_path"] = args.token_path
         uploader = ExperimentUploader(**kwargs)
         if not uploader.token:
-            logger.error("No token found. Login first: python -m utils.expdata.client login <username> --password <pw> --server " + args.server)
+            logger.error(
+                "No token found. Login first: python -m utils.expdata.client login <username> --password <pw> --server %s",
+                args.server,
+            )
             sys.exit(1)
     else:
         uploader = None
 
     imported = 0
     for folder, exp_type in folders:
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
         logger.info(f"Importing: {folder.name} (type={exp_type})")
         try:
             if exp_type == "eval":
@@ -345,6 +363,7 @@ def main():
         except Exception as e:
             logger.error(f"  Failed to import {folder.name}: {e}")
             import traceback
+
             traceback.print_exc()
 
     print()

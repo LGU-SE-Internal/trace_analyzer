@@ -15,8 +15,9 @@ Behavior:
 
 import argparse
 import os
-import sys
 import subprocess
+import sys
+
 
 def search_in_directory(search_term: str, directory: str = ".", python_only: bool = False):
     """
@@ -47,7 +48,7 @@ def search_in_directory(search_term: str, directory: str = ".", python_only: boo
 
             filepath = os.path.join(root, file)
             try:
-                with open(filepath, "r", errors="ignore") as f:
+                with open(filepath, errors="ignore") as f:
                     file_matches = 0
                     for line_num, line in enumerate(f, 1):
                         if search_term in line:
@@ -66,10 +67,7 @@ def search_in_directory(search_term: str, directory: str = ".", python_only: boo
     # Summarize
     num_matches = sum(matches.values())
     if num_files_matched > 100:
-        print(
-            f'More than {num_files_matched} files matched for "{search_term}" in {directory}. '
-            "Please narrow your search."
-        )
+        print(f'More than {num_files_matched} files matched for "{search_term}" in {directory}. Please narrow your search.')
         sys.exit(0)
 
     print(f'Found {num_matches} matches for "{search_term}" in {directory}:')
@@ -82,6 +80,7 @@ def search_in_directory(search_term: str, directory: str = ".", python_only: boo
         print(f"{relative_path} ({count} matches)")
 
     print(f'End of matches for "{search_term}" in {directory}')
+
 
 def search_in_directory_old(search_term: str, directory: str = ".", python_only=False):
     """
@@ -106,7 +105,7 @@ def search_in_directory_old(search_term: str, directory: str = ".", python_only=
                 continue
             filepath = os.path.join(root, file)
             try:
-                with open(filepath, "r", errors="ignore") as f:
+                with open(filepath, errors="ignore") as f:
                     file_matches = 0
                     for line_num, line in enumerate(f, 1):
                         if search_term in line:
@@ -125,10 +124,7 @@ def search_in_directory_old(search_term: str, directory: str = ".", python_only=
     # Summarize
     num_matches = sum(matches.values())
     if num_files_matched > 100:
-        print(
-            f'More than {num_files_matched} files matched for "{search_term}" in {directory}. '
-            "Please narrow your search."
-        )
+        print(f'More than {num_files_matched} files matched for "{search_term}" in {directory}. Please narrow your search.')
         sys.exit(0)
 
     print(f'Found {num_matches} matches for "{search_term}" in {directory}:')
@@ -157,19 +153,10 @@ def search_in_file(search_term: str, filepath: str):
 
     try:
         # Try modern parameters if Python 3.7+ (capture_output, text)
-        result = subprocess.run(
-            ["grep", "-n", search_term, filepath],
-            capture_output=True,
-            text=True
-        )
+        result = subprocess.run(["grep", "-n", search_term, filepath], capture_output=True, text=True)
     except TypeError:
         # Fallback for Python 3.5/3.6
-        result = subprocess.run(
-            ["grep", "-n", search_term, filepath],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True
-        )
+        result = subprocess.run(["grep", "-n", search_term, filepath], capture_output=True, text=True)
 
     if result.returncode != 0:
         # grep exit code = 1 means "no matches", other non-zero exit code is a real error
@@ -205,23 +192,15 @@ def search_in_file(search_term: str, filepath: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="search tool: run subcommands such as `search` for files or directories."
-    )
-    parser.add_argument(
-        "--search_term", help="Term to search for in files.", required=True
-    )
+    parser = argparse.ArgumentParser(description="search tool: run subcommands such as `search` for files or directories.")
+    parser.add_argument("--search_term", help="Term to search for in files.", required=True)
     parser.add_argument(
         "--path",
         help="File or directory to search in (defaults to current dir).",
         default=".",
     )
     # NEW ARGUMENT:
-    parser.add_argument(
-        "--python_only",
-        default=True,
-        help="If set, only search for matches in .py files when searching a directory."
-    )
+    parser.add_argument("--python_only", default=True, help="If set, only search for matches in .py files when searching a directory.")
 
     args = parser.parse_args()
     # Check if path is a file or a directory

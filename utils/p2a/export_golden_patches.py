@@ -106,9 +106,7 @@ def process_parquet(path: str, result: dict) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Export golden patch callables from parquet to JSON for the trajectory analyzer."
-    )
+    parser = argparse.ArgumentParser(description="Export golden patch callables from parquet to JSON for the trajectory analyzer.")
     parser.add_argument(
         "parquets",
         nargs="*",
