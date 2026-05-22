@@ -22,14 +22,14 @@ Two modes:
 Usage::
 
     # Static analysis only (fast, no sandbox needed)
-    python scripts/analyze_dataset_traceability.py data/swe/R2E_Gym_Subset.parquet
+    python -m utils.p2a.analyze_traceability data/swe/R2E_Gym_Subset.parquet
 
     # With precomputed bonus maps for fine-grained classification
-    python scripts/analyze_dataset_traceability.py data/swe/R2E_Gym_Subset.parquet \\
+    python -m utils.p2a.analyze_traceability data/swe/R2E_Gym_Subset.parquet \\
         --bonus_maps_dir data/swe/bonus_maps
 
     # Analyze a directory of bonus map JSONs directly (no parquet needed)
-    python scripts/analyze_dataset_traceability.py --bonus_maps_dir data/swe/bonus_maps
+    python -m utils.p2a.analyze_traceability --bonus_maps_dir data/swe/bonus_maps
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from pathlib import Path
 import pandas as pd
 
 # Ensure project root is on the path so we can import rllm
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from rllm.environments.swe.trace import (
     _is_test_file,
@@ -102,13 +102,14 @@ def classify_bonus_map(bm: dict) -> dict:
     Uses ``case_type`` from the JSON when available (written by
     ``precompute_bonus_maps.py``), otherwise re-derives it.
 
-    case_type values (flat strings matching precompute_bonus_maps.py):
-        direct        — F2P test calls patched callable directly
-        standard      — F2P test reaches patched callable through intermediates
-        crash         — tests crashed before reaching patched callable
-        newly_created — all patched callables are pure additions
-        no_callables  — patch modifies no callable
-        no_f2p_trace  — instrumentation succeeded but no F2P trace captured
+    case_type values (matching precompute_bonus_maps.py decision tree):
+        newly_created — all GT callables are pure additions
+        no_callable   — patch modifies no callable
+        no_trace      — 0 traces captured (error)
+        no_gt         — traces exist but none contain GT callable (error)
+        no_f2p        — GT traces exist but none from F2P tests (error)
+        standard      — F2P→GT call chain with intermediate nodes
+        direct        — F2P→GT call chain, test calls GT directly
 
     Returns a dict with instance stats and category/case_type fields.
     """
@@ -116,7 +117,6 @@ def classify_bonus_map(bm: dict) -> dict:
     patched = bm.get("patched_callables", [])
     nodes = bm.get("call_graph_nodes", {})
     hop_max = bm.get("hop_max", 0)
-    traceable = bm.get("traceable", False)
 
     n_patched = len(patched)
     n_nodes = len(nodes)
@@ -146,24 +146,23 @@ def classify_bonus_map(bm: dict) -> dict:
     # Prefer pre-computed case_type from the bonus map JSON
     case_type = bm.get("case_type")
     if not case_type:
-        # Re-derive using the same logic as precompute_bonus_maps.py
+        # Re-derive using the same decision tree as precompute_bonus_maps.py
         if not patched:
             if bm.get("newly_created_callables"):
                 case_type = "newly_created"
             else:
-                case_type = "no_callables"
-        elif not traceable:
-            case_type = "no_callables"
-        elif bm.get("crash"):
-            case_type = "crash"
-        elif n_test_entries == 0:
-            case_type = "no_f2p_trace"
-        elif n_intermediate > 0:
+                case_type = "no_callable"
+        elif n_test_entries > 0 and n_intermediate > 0:
             case_type = "standard"
-        else:
+        elif n_test_entries > 0:
             case_type = "direct"
+        elif n_nodes > 0:
+            case_type = "no_f2p"
+        else:
+            case_type = "no_trace"
 
     result["case_type"] = case_type
+    result["error"] = bm.get("error", case_type in ("no_trace", "no_gt", "no_f2p"))
     result["category"] = "traceable" if case_type in ("direct", "standard") else "untraceable"
 
     if bm.get("newly_created_callables"):
@@ -289,13 +288,15 @@ def print_bonus_map_report(bonus_dir: str, maps: dict[str, dict]) -> None:
     print(f"  direct             {case_counts['direct']:5d}")
     print(f"  standard           {case_counts['standard']:5d}")
     print(f"\nuntraceable/        {n_untraceable:5d}  ({100*n_untraceable/total:.1f}%)")
-    print(f"  crash              {case_counts['crash']:5d}")
     print(f"  newly_created      {case_counts['newly_created']:5d}")
-    print(f"  no_callables       {case_counts['no_callables']:5d}")
-    print(f"  no_f2p_trace       {case_counts['no_f2p_trace']:5d}")
+    print(f"  no_callable        {case_counts['no_callable']:5d}")
+    print(f"  no_trace (error)   {case_counts['no_trace']:5d}")
+    print(f"  no_gt    (error)   {case_counts['no_gt']:5d}")
+    print(f"  no_f2p   (error)   {case_counts['no_f2p']:5d}")
 
     # Any case_types not in the standard set
-    standard_types = {"direct", "standard", "crash", "newly_created", "no_callables", "no_f2p_trace"}
+    standard_types = {"direct", "standard", "newly_created", "no_callable",
+                      "no_trace", "no_gt", "no_f2p"}
     for ct, cnt in case_counts.most_common():
         if ct not in standard_types:
             print(f"  {ct:<18s} {cnt:5d}")
@@ -328,7 +329,7 @@ def print_bonus_map_report(bonus_dir: str, maps: dict[str, dict]) -> None:
     for c in classifications:
         by_ct.setdefault(c["case_type"], []).append(c)
 
-    ct_order = ["standard", "direct", "crash", "newly_created", "no_callables", "no_f2p_trace"]
+    ct_order = ["standard", "direct", "newly_created", "no_callable", "no_trace", "no_gt", "no_f2p"]
     for ct in ct_order:
         items = by_ct.get(ct, [])
         if not items:

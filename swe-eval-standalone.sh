@@ -42,7 +42,7 @@ EXPERIMENT_NAME="${EXPERIMENT_NAME:-agentic-swe-eval}"
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
 
-bash scripts/clear_arl.sh
+bash utils/infra/clear_arl.sh
 
 # ============ Feature Flags ============
 DRY_RUN="${DRY_RUN:-false}"
@@ -192,7 +192,7 @@ if [ -n "$MAX_TASKS" ]; then
 fi
 
 # ============ Run Evaluation ============
-python3 "$SCRIPT_DIR/scripts/swe_eval_standalone.py" \
+python3 "$SCRIPT_DIR/utils/eval/swe_eval_standalone.py" \
     --data "$DATA_FILE" \
     --n_samples "$N_SAMPLES" \
     --scaffold r2egym \

@@ -2,7 +2,7 @@
 # Patch verl rl_dataset.py to fix extra_info parsing
 # (issue: https://github.com/rllm-org/rllm/issues/364)
 #
-# Usage: source scripts/patch_verl.sh
+# Usage: source utils/infra/patch_verl.sh
 
 python3 -c "
 import verl.utils.dataset.rl_dataset as m

@@ -2,9 +2,9 @@
 """Debug a single instance's sandbox execution end-to-end.
 
 Usage:
-    python scripts/debug_bonus_instance.py orange3__62549d25
-    python scripts/debug_bonus_instance.py orange3__945e235a
-    python scripts/debug_bonus_instance.py --index 42   # by row index
+    python -m utils.p2a.debug_instance orange3__62549d25
+    python -m utils.p2a.debug_instance orange3__945e235a
+    python -m utils.p2a.debug_instance --index 42   # by row index
 
 Shows:
     1. Patched callables found by AST diff
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from rllm.environments.swe.trace import (
     TRACE_FILE_PATH,
@@ -106,6 +106,7 @@ def main():
         env.reset()
         print(f"    repo_path: {env.repo_path}")
         print(f"    swebench_verified: {env.swebench_verified}")
+        print(f"    (repo fixups applied via SWEEnv._setup_env)")
 
         # Step 3: show pre-instrumentation source (first file, near patched callable)
         first_file = all_modified[0]["file_path"]
@@ -297,6 +298,8 @@ def main():
         print(f"    Raw traces: {len(traces)}")
 
         # F2P filtering (inlined to avoid cross-script import issues)
+        import re
+        _param_re = re.compile(r"\[.*\]$")
         f2p_funcs = None
         if not env.swebench_verified:
             # R2E-Gym: FAILED tests on buggy code = F2P tests
@@ -304,6 +307,7 @@ def main():
             for name, status in test_status.items():
                 if status in ("FAILED", "ERROR"):
                     bare = name.rsplit(".", 1)[-1] if "." in name else name
+                    bare = _param_re.sub("", bare)
                     if bare:
                         failed.add(bare)
             f2p_funcs = failed if failed else None
@@ -374,7 +378,7 @@ def main():
 
         # Save to data/<instance_id>_debug.json
         output_path = os.path.join(
-            Path(__file__).resolve().parent.parent, "data", f"{instance_id}_debug.json"
+            Path(__file__).resolve().parent.parent.parent, "data", f"{instance_id}_debug.json"
         )
         with open(output_path, "w") as f:
             json.dump(result, f, indent=2)

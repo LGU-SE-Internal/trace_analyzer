@@ -22,4 +22,4 @@ ARGS=(--port "$PORT")
 [[ -n "$GATEWAY" ]] && ARGS+=(--gateway "$GATEWAY")
 
 echo "Starting Sandbox Explorer on port $PORT ..."
-exec python3 scripts/sandbox_server.py "${ARGS[@]}"
+exec python3 utils/infra/sandbox_server.py "${ARGS[@]}"

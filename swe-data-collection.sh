@@ -61,7 +61,7 @@ EXPERIMENT_NAME="${EXPERIMENT_NAME:-swe-data-collection}"
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
 
-bash scripts/clear_arl.sh
+bash utils/infra/clear_arl.sh
 
 # ============ Mode & Backend ============
 MODE="${MODE:-rejection}"
@@ -315,7 +315,7 @@ echo ""
 _DISABLE_THINKING_FLAG=""
 [ "$DISABLE_THINKING" = "true" ] && _DISABLE_THINKING_FLAG="--disable_thinking"
 
-python3 scripts/collect_swe_trajectories.py \
+python3 utils/collect/collect_swe_trajectories.py \
     --model "$_MODEL_ARG" \
     --base_url "$BASE_URL" \
     --api_key "$API_KEY" \

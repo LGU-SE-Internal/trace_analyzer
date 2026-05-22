@@ -12,26 +12,26 @@ next starts — no batch barriers, no fast pools waiting for slow ones.
 
 Usage:
     # Dry-run (preview what would be created)
-    python scripts/batch_prefetch.py --dry-run
+    python -m utils.infra.batch_prefetch --dry-run
 
     # Create all pools (uses ARL_GATEWAY_URL env var or --gateway)
-    python scripts/batch_prefetch.py
+    python -m utils.infra.batch_prefetch
 
     # Specific dataset only
-    python scripts/batch_prefetch.py --dataset r2egym
-    python scripts/batch_prefetch.py --dataset swebench
+    python -m utils.infra.batch_prefetch --dataset r2egym
+    python -m utils.infra.batch_prefetch --dataset swebench
 
     # Custom gateway and concurrency
-    python scripts/batch_prefetch.py --gateway http://118.145.210.10:8080 --concurrency 20
+    python -m utils.infra.batch_prefetch --gateway http://118.145.210.10:8080 --concurrency 20
 
     # Keep pools running after image pull (don't scale down)
-    python scripts/batch_prefetch.py --no-scale-down-after
+    python -m utils.infra.batch_prefetch --no-scale-down-after
 
     # Limit number of pools (for testing)
-    python scripts/batch_prefetch.py --limit 5
+    python -m utils.infra.batch_prefetch --limit 5
 
     # Delete all pools instead of creating
-    python scripts/batch_prefetch.py --delete
+    python -m utils.infra.batch_prefetch --delete
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def mirror_image(docker_image: str) -> str:
     """Convert a docker image to the mirror registry format.
 
     Rewrites the namespace (first path segment) to MIRROR_NAMESPACE ('code'),
-    consistent with scripts/mirror_images.py rewrite_namespace().
+    consistent with utils.infra.mirror_images.rewrite_namespace().
 
     Examples:
         namanjain12/numpy_final:abc123

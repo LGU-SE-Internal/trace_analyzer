@@ -13,18 +13,18 @@ Works on:
 
 Usage:
     # Analyze training rollout (requires bonus maps)
-    python scripts/analyze_localization.py \
+    python -m utils.p2a.analyze_localization \
         --trajectories /path/to/chat_completions/10.jsonl \
         --bonus_map_dir data/swe/bonus_maps \
         --tracking_mode view_and_bash
 
     # Analyze eval trajectories
-    python scripts/analyze_localization.py \
+    python -m utils.p2a.analyze_localization \
         --trajectories /path/to/eval/trajectories.jsonl \
         --bonus_map_dir data/swe/bonus_maps
 
     # Analyze with W&B logging
-    python scripts/analyze_localization.py \
+    python -m utils.p2a.analyze_localization \
         --trajectories /path/to/trajectories.jsonl \
         --bonus_map_dir data/swe/bonus_maps \
         --wandb_project xujunjielong \
@@ -42,7 +42,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from rllm.trainer.verl.p2a import (
     BonusMapStore,

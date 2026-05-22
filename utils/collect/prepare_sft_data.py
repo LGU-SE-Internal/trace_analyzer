@@ -12,7 +12,7 @@ This matches what the model sees during RL rollout / eval exactly:
 Requires tokenizer access (run on the training server, not locally).
 
 Usage:
-    python scripts/prepare_sft_data.py \
+    python -m utils.collect.prepare_sft_data \
         --input data/swe/R2EGym_SFT_Trajectories.parquet \
         --output data/swe/R2EGym_SFT_Trajectories_Qwen3.parquet \
         --model_path /path/to/Qwen3-8B
@@ -116,8 +116,9 @@ def main():
         samples = split_trajectory(messages)
         all_samples.extend(samples)
 
+    avg_steps = len(all_samples) / len(df)
     print(f"Split into {len(all_samples)} per-step samples "
-          f"(avg {len(all_samples)/len(df):.1f} steps/trajectory)")
+          f"(avg {avg_steps:.1f} steps/trajectory)")
 
     # Render prompts using chat template
     rendered = render_prompts(all_samples, tokenizer)
@@ -125,6 +126,12 @@ def main():
 
     out_df.to_parquet(args.output, index=False)
     print(f"\nSaved {len(out_df)} samples to {args.output}")
+
+    # Write avg steps for downstream lr scaling
+    meta_file = args.output.replace(".parquet", ".meta")
+    with open(meta_file, "w") as f:
+        f.write(f"{avg_steps:.2f}\n")
+    print(f"Wrote avg_steps={avg_steps:.2f} to {meta_file}")
 
 
 if __name__ == "__main__":

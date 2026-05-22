@@ -17,35 +17,35 @@ all sources have been exhausted.
 
 Usage:
     # Full mirror (pull + push + cleanup, default)
-    python scripts/mirror_images.py
+    python -m utils.infra.mirror_images
 
     # Multiple source registries (round-robin + fallback)
-    python scripts/mirror_images.py --src mirror1.example.com,mirror2.example.com
+    python -m utils.infra.mirror_images --src mirror1.example.com,mirror2.example.com
 
     # Stage 1 only: pull images to local
-    python scripts/mirror_images.py --stage pull
+    python -m utils.infra.mirror_images --stage pull
 
     # Stage 2 only: push local images to dst (assumes images already pulled)
-    python scripts/mirror_images.py --stage push
+    python -m utils.infra.mirror_images --stage push
 
     # Custom source and destination registries
-    python scripts/mirror_images.py --src docker.io --dst my-registry.example.com
+    python -m utils.infra.mirror_images --src docker.io --dst my-registry.example.com
 
     # Dry-run — only print commands, don't execute
-    python scripts/mirror_images.py --dry-run
+    python -m utils.infra.mirror_images --dry-run
 
     # Custom parallelism
-    python scripts/mirror_images.py --workers 8
+    python -m utils.infra.mirror_images --workers 8
 
     # Mirror only one dataset
-    python scripts/mirror_images.py --dataset swebench
-    python scripts/mirror_images.py --dataset r2egym
+    python -m utils.infra.mirror_images --dataset swebench
+    python -m utils.infra.mirror_images --dataset r2egym
 
     # Resume from a previously failed run (skip already-pushed images)
-    python scripts/mirror_images.py --skip-existing
+    python -m utils.infra.mirror_images --skip-existing
 
     # Test connectivity by mirroring only the first image
-    python scripts/mirror_images.py --test-one
+    python -m utils.infra.mirror_images --test-one
 """
 
 from __future__ import annotations

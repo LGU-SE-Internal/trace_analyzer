@@ -22,6 +22,21 @@ SWE_DATASETS = [
     "R2E-Gym/R2EGym-SFT-Trajectories"
 ]
 
+HARD_DIFFICULTIES = {"1-4 hours", ">4 hours"}
+
+
+def _get_hard_instance_ids():
+    """Get instance_ids of hard problems from SWE-bench/SWE-bench_Verified (difficulty labels)."""
+    print("Downloading SWE-bench/SWE-bench_Verified for difficulty labels ...")
+    ds = load_dataset("SWE-bench/SWE-bench_Verified")
+    split = ds["test"] if "test" in ds else ds["train"]
+    hard_ids = set()
+    for row in split:
+        if row.get("difficulty") in HARD_DIFFICULTIES:
+            hard_ids.add(row["instance_id"])
+    print(f"Found {len(hard_ids)} hard instances from SWE-bench/SWE-bench_Verified")
+    return hard_ids
+
 
 def main():
     parser = argparse.ArgumentParser(description="Generate trajectories using specified environment and policy.")
@@ -103,6 +118,36 @@ def main():
                 print(f"Copied {output_name_base}.parquet to HDFS: {hdfs_filepath}")
             except Exception as e:
                 print(f"Failed to copy {output_filepath} to HDFS {hdfs_filepath}: {e}")
+
+    # Build hard subset from SWE-Bench-Verified
+    build_hard_subset(local_dir, process_fn, hdfs_dir)
+
+
+def build_hard_subset(local_dir, process_fn, hdfs_dir=None):
+    """Build SWE-Bench-Verified hard subset using difficulty labels from the original dataset."""
+    hard_output = os.path.join(local_dir, "SWE_Bench_Verified_Hard.parquet")
+    if os.path.exists(hard_output):
+        print(f"{hard_output} already exists, skipping.")
+        return
+
+    # Load R2E-Gym version (has docker_image field needed for ARL pods)
+    print("Building SWE-Bench-Verified hard subset ...")
+    dataset_splits = load_dataset("R2E-Gym/SWE-Bench-Verified")
+    split_data = dataset_splits["test"] if "test" in dataset_splits else dataset_splits["train"]
+
+    hard_ids = _get_hard_instance_ids()
+    hard_rows = [process_fn(row) for row in split_data if row.get("instance_id") in hard_ids]
+
+    df = pd.DataFrame(hard_rows)
+    df.to_parquet(hard_output)
+    print(f"Saved {len(df)} hard instances to {hard_output}")
+
+    if hdfs_dir is not None:
+        try:
+            makedirs(hdfs_dir)
+            copy(src=hard_output, dst=os.path.join(hdfs_dir, "SWE_Bench_Verified_Hard.parquet"))
+        except Exception as e:
+            print(f"Failed to copy hard subset to HDFS: {e}")
 
 
 if __name__ == "__main__":

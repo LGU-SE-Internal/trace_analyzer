@@ -10,28 +10,28 @@ All samples are evaluated without any prompt-length filtering.
 
 Usage:
     # Greedy eval (n=1) with local vLLM — SWE-Bench Verified
-    python scripts/swe_eval_standalone.py \
+    python -m utils.eval.swe_eval_standalone \
         --model /path/to/model \
         --data data/swe/SWE_Bench_Verified.parquet
 
     # Greedy eval — R2E-Gym Subset
-    python scripts/swe_eval_standalone.py \
+    python -m utils.eval.swe_eval_standalone \
         --model /path/to/model \
         --data data/R2E-Gym/R2E-Gym-Subset-train.parquet
 
     # pass@5 with sampling
-    python scripts/swe_eval_standalone.py \
+    python -m utils.eval.swe_eval_standalone \
         --model /path/to/model \
         --data data/swe/SWE_Bench_Verified.parquet \
         --n_samples 5 --temperature 1.0
 
     # Dry run (SWE-Bench): harness on unmodified code + fault tracing
-    python scripts/swe_eval_standalone.py \
+    python -m utils.eval.swe_eval_standalone \
         --dry_run --normalize_pytest \
         --data data/swe/SWE_Bench_Verified.parquet
 
     # Dry run (R2E-Gym): same interface, different dataset
-    python scripts/swe_eval_standalone.py \
+    python -m utils.eval.swe_eval_standalone \
         --dry_run --normalize_pytest \
         --data data/R2E-Gym/R2E-Gym-Subset-train.parquet
 """
@@ -302,9 +302,26 @@ def run_agent_eval(args, tasks):
 
     from rllm.agents.swe_agent import SWEAgent
     from rllm.engine.agent_execution_engine import AgentExecutionEngine
+    from rllm.engine.rollout.verl_aligned_engine import VerlAlignedEngine
 
     print(f"Loading tokenizer: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+
+    sampling_params = {
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+    }
+
+    rollout_engine = VerlAlignedEngine(
+        model=args.model,
+        tokenizer=tokenizer,
+        base_url=args.base_url,
+        api_key=args.api_key,
+        max_prompt_length=args.max_prompt_length,
+        max_response_length=args.max_response_length,
+        sampling_params=sampling_params.copy(),
+    )
 
     engine = AgentExecutionEngine(
         agent_class=SWEAgent,
@@ -319,9 +336,7 @@ def run_agent_eval(args, tasks):
         },
         engine_name="openai",
         tokenizer=tokenizer,
-        sampling_params={
-            "temperature": args.temperature,
-        },
+        sampling_params=sampling_params,
         rollout_engine_args={
             "model": args.model,
             "base_url": args.base_url,
@@ -335,6 +350,7 @@ def run_agent_eval(args, tasks):
         retry_limit=args.retry_limit,
         overlong_filter=False,
     )
+    engine.rollout_engine = rollout_engine
 
     print(f"Starting evaluation with {args.n_parallel} parallel agents...")
     print(f"  Model: {args.model}")
@@ -504,6 +520,8 @@ def parse_args():
     sample_group = parser.add_argument_group("sampling")
     sample_group.add_argument("--n_samples", type=int, default=1, help="Number of samples per task for pass@k (default: 1)")
     sample_group.add_argument("--temperature", type=float, default=None, help="Sampling temperature (default: 0 for n=1, 1.0 for n>1)")
+    sample_group.add_argument("--top_p", type=float, default=1.0, help="Nucleus sampling top-p (default: 1.0, no filtering)")
+    sample_group.add_argument("--top_k", type=int, default=-1, help="Top-k sampling (default: -1, disabled)")
 
     # Agent / Env
     agent_group = parser.add_argument_group("agent/env")
@@ -534,6 +552,11 @@ def parse_args():
     parser.add_argument("--output", type=str, default=None, help="Output JSONL path (default: auto-generated)")
     parser.add_argument("--output_dir", type=str, default="eval_results", help="Output directory (default: eval_results)")
 
+    # Upload
+    upload_group = parser.add_argument_group("upload")
+    upload_group.add_argument("--upload", action="store_true", help="Upload results to expdata service after completion")
+    upload_group.add_argument("--upload_url", type=str, default="http://expdata.default.svc.cluster.local:8502", help="Expdata service URL")
+
     return parser.parse_args()
 
 
@@ -547,8 +570,7 @@ def main():
 
     # Resolve temperature
     if args.temperature is None:
-        # args.temperature = 1.0 if args.n_samples > 1 else 0.0
-        args.temperature = 1.0 # use 1.0 for all runs. Introduce some randomness.
+        args.temperature = 1.0 if args.n_samples > 1 else 0.0
 
     # Load and prepare tasks
     base_tasks = load_tasks(args)
@@ -619,6 +641,49 @@ def main():
                 tracking_mode=args.p2a_tracking_mode,
                 output_dir=args.output_dir,
             )
+
+    # ---- Upload to expdata service ----
+    if args.upload:
+        try:
+            from utils.expdata.client import ExperimentUploader
+
+            uploader = ExperimentUploader(args.upload_url)
+            exp_name = f"eval-{Path(args.model or 'dry_run').name}-{Path(args.data).stem}"
+            exp_id = uploader.create_experiment(
+                name=exp_name,
+                type="eval",
+                model=args.model,
+                backend=getattr(args, "backend", None),
+                scaffold=args.scaffold,
+                dataset=args.data,
+                n_samples=args.n_samples,
+            )
+            logger.info(f"Created experiment {exp_id} on {args.upload_url}")
+
+            if results:
+                uploader.upload_eval_results(exp_id, results)
+            if args.dry_run:
+                if test_outputs:
+                    uploader.upload_test_outputs(exp_id, test_outputs)
+                if fault_traces_map:
+                    uploader.upload_fault_traces(exp_id, fault_traces_map)
+
+            # Upload localization if it exists
+            loc_path = os.path.join(args.output_dir, "localization_analysis.json")
+            if os.path.exists(loc_path):
+                with open(loc_path) as f:
+                    uploader.upload_localization(exp_id, json.load(f))
+
+            solved = sum(1 for r in results if r.get("reward", 0) > 0) if results else 0
+            total = len(results) if results else 0
+            uploader.mark_completed(exp_id, {
+                "total": total,
+                "solved": solved,
+                "solve_rate": solved / max(total, 1),
+            })
+            logger.info(f"Upload complete: experiment {exp_id}")
+        except Exception as e:
+            logger.warning(f"Upload failed (non-fatal): {e}")
 
 
 if __name__ == "__main__":

@@ -6,8 +6,8 @@ Reads per-instance validation results (JSONL) produced by the eval pipeline
 and generates comprehensive statistics.
 
 Usage:
-    python scripts/swe_report.py <results_jsonl>
-    python scripts/swe_report.py /path/to/val_results/step_0.jsonl
+    python -m utils.eval.swe_report <results_jsonl>
+    python -m utils.eval.swe_report /path/to/val_results/step_0.jsonl
 
 The JSONL file is saved by _validate_agent() in:
     {default_local_dir}/val_results/step_{global_steps}.jsonl

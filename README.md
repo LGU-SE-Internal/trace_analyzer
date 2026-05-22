@@ -267,6 +267,39 @@ bash swe-precompute-bonus-maps.sh static
 
 Output: `data/swe/bonus_maps/{instance_id}.json` — one per task, reusable across all experiments.
 
+#### Classification Decision Tree
+
+Each instance is classified by walking the tree top-to-bottom (first match wins):
+
+```
+Instance
+│
+├─ Static layer (AST diff of old_file_content vs new_file_content):
+│   ├─ All GT callables only in new content? ─── newly_created
+│   └─ No callable-level changes in patch?   ─── no_callable
+│
+└─ Dynamic layer (instrument sandbox → run tests → parse traces):
+    │
+    ├─ 0 trace entries captured?             ─── no_trace   (error)
+    │
+    ├─ Traces exist but none contain
+    │  a GT callable frame (is_patched)?     ─── no_gt      (error)
+    │
+    ├─ All tests pass on buggy code?
+    │  (0 test failures detected)            ─── all_pass   (error)
+    │
+    ├─ Tests fail but F2P filter
+    │  removed all GT traces?                ─── no_f2p     (error)
+    │
+    └─ F2P→GT call chain found:
+        ├─ Intermediate nodes exist?         ─── standard   (traceable)
+        └─ Test calls GT directly?           ─── direct     (traceable)
+```
+
+- **F2P** (fail-to-pass): test that FAILS on buggy code, PASSES after the developer's fix.
+- **GT** (ground-truth): the callable(s) modified by the developer's golden patch.
+- **error=True** cases indicate environmental or data issues — traced case-by-case via `utils/p2a/debug_instance.py`.
+
 ### Train with P2A
 
 ```bash
@@ -291,7 +324,7 @@ P2A environment variables:
 After agent eval, analyze how well the agent localizes bugs:
 
 ```bash
-uv run python3 scripts/swe_eval_standalone.py \
+uv run python3 utils/eval/swe_eval_standalone.py \
     --model /path/to/model \
     --data data/swe/SWE_Bench_Verified.parquet \
     --p2a_bonus_map_dir data/swe/bonus_maps \
@@ -301,7 +334,7 @@ uv run python3 scripts/swe_eval_standalone.py \
 Or analyze existing trajectory logs:
 
 ```bash
-uv run python3 scripts/analyze_localization.py \
+uv run python3 utils/p2a/analyze_localization.py \
     --trajectories /path/to/chat_completions/10.jsonl \
     --bonus_map_dir data/swe/bonus_maps \
     --tracking_mode view_and_bash
@@ -376,7 +409,7 @@ Compares agent steps against the ground-truth bug location (callable-level).
 **Step 1 — Export golden patch data** (one-time, run from repo root):
 
 ```bash
-uv run python3 scripts/export_golden_patches.py
+uv run python3 utils/p2a/export_golden_patches.py
 # Output: data/swe/golden_patches.json
 ```
 
@@ -419,9 +452,9 @@ The trajectory dropdown shows compact tags for quick scanning:
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/export_golden_patches.py` | Export callable-level golden patch data from parquet(s) to JSON |
-| `scripts/analyze_dataset_traceability.py` | Batch classify instances by traceability (static or bonus-map mode) |
-| `scripts/precompute_bonus_maps.py` | Precompute dynamic call-graph bonus maps (needs ARL sandbox) |
+| `utils/p2a/export_golden_patches.py` | Export callable-level golden patch data from parquet(s) to JSON |
+| `utils/p2a/analyze_traceability.py` | Batch classify instances by traceability (static or bonus-map mode) |
+| `utils/p2a/precompute_bonus_maps.py` | Precompute dynamic call-graph bonus maps (needs ARL sandbox) |
 
 ## Sandbox Explorer
 
@@ -444,7 +477,7 @@ Then open `http://localhost:7860`.
 - Real-time stdout/stderr with color coding
 - Gateway URL and experiment ID configurable from the UI
 
-**Files:** `sandbox_explorer.sh`, `sandbox_explorer.html`, `scripts/sandbox_server.py`
+**Files:** `sandbox_explorer.sh`, `sandbox_explorer.html`, `utils/infra/sandbox_server.py`
 
 ## Table 1 Experiments
 
@@ -528,17 +561,23 @@ sandbox_explorer.sh                # Launch sandbox explorer UI
 sandbox_explorer.html              # Sandbox explorer frontend
 trajectory_analyzer.html           # Trajectory analyzer UI (open directly in browser)
 
+utils/
+  expdata/                             # Experiment tracking service
+    schema.py, server.py, client.py, import_local.py
+  p2a/                                 # P2A bonus maps pipeline
+    precompute_bonus_maps.py, analyze_traceability.py, analyze_localization.py
+    debug_instance.py, export_golden_patches.py
+  eval/                                # Evaluation pipeline
+    swe_eval_standalone.py, swe_report.py
+  collect/                             # Data collection & preparation
+    collect_swe_trajectories.py, prepare_sft_data.py
+  infra/                               # Infrastructure utilities
+    batch_prefetch.py, mirror_images.py, sandbox_server.py
+    clear_arl.sh, patch_verl.sh, launch_litellm.sh
+
 scripts/
-  collect_swe_trajectories.py      # Rejection / DPO sampling core (API or vLLM)
-  precompute_bonus_maps.py         # P2A bonus map precomputation
-  export_golden_patches.py         # Export callable-level golden patch data for trajectory analyzer
-  analyze_dataset_traceability.py  # Classify instances by traceability
-  swe_eval_standalone.py           # Eval logic (agent or dry-run)
-  analyze_localization.py          # Post-hoc localization analysis
-  swe_report.py                    # Results reporting
-  sandbox_server.py                # Sandbox explorer backend (Flask)
-  patch_verl.sh                    # VeRL runtime patches
   data/swe_dataset.py              # Dataset download/preparation
+  dump_cfg.py                      # Config dumping utility
 
 rllm/
   trainer/

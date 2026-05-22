@@ -7,13 +7,13 @@ step highlighting.
 Usage::
 
     # Export both default parquets
-    python scripts/export_golden_patches.py
+    python -m utils.p2a.export_golden_patches
 
     # Export specific parquet(s)
-    python scripts/export_golden_patches.py data/swe/SWE_Bench_Verified.parquet
+    python -m utils.p2a.export_golden_patches data/swe/SWE_Bench_Verified.parquet
 
     # Custom output path
-    python scripts/export_golden_patches.py --out /tmp/golden_patches.json
+    python -m utils.p2a.export_golden_patches --out /tmp/golden_patches.json
 
 Output format::
 
@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from rllm.environments.swe.trace import (
     find_modified_callables_from_task,

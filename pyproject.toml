@@ -198,6 +198,7 @@ exclude = [
     "rllm/rewards/math_utils/.*",
     "examples/.*",
     "scripts/.*",
+    "utils/.*",
     "tests/.*",
     "docs/.*",
 ]

@@ -26,7 +26,7 @@ MODE=${1:-static}
 
 export ARL_EXPERIMENT_ID="${2:-bonus-maps}"
 
-bash scripts/clear_arl.sh
+bash utils/infra/clear_arl.sh
 
 # ============ Configurable via env vars ============
 DATA_FILE="${DATA_FILE:-data/swe/R2E_Gym_Subset.parquet}"
@@ -42,7 +42,7 @@ if [ -n "$LIMIT" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --limit $LIMIT"
 fi
 
-python3 "$SCRIPT_DIR/scripts/precompute_bonus_maps.py" \
+python3 "$SCRIPT_DIR/utils/p2a/precompute_bonus_maps.py" \
     "$DATA_FILE" \
     --output_dir "$OUTPUT_DIR" \
     --mode "$MODE" \

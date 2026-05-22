@@ -39,7 +39,7 @@ GD_PER_STEP=${GD_PER_STEP:-2}
 
 export ARL_EXPERIMENT_ID="$EXPERIMENT_NAME"
 
-bash scripts/clear_arl.sh
+bash utils/infra/clear_arl.sh
 
 # ============ Configurable via env vars (backward-compatible defaults) ============
 ADV_ESTIMATOR="${ADV_ESTIMATOR:-rloo}"
@@ -80,7 +80,7 @@ WAND_PROJECT='xujunjielong'
 # actor_rollout_ref.ref.fsdp_config.param_offload=true
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-bash "$SCRIPT_DIR/scripts/patch_verl.sh"
+bash "$SCRIPT_DIR/utils/infra/patch_verl.sh"
 
 # ============ Build P2A overrides ============
 P2A_OVERRIDES=""

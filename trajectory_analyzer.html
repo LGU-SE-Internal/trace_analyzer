@@ -210,6 +210,31 @@ tr.clickable { cursor:pointer; }
 .comp-table .dpos { color:var(--green); }
 .comp-table .dneg { color:var(--red); }
 
+/* Comparison Inspector */
+.comp-insp-header { display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+.comp-insp-header .fld { font-size:12px; }
+.comp-insp-header .flbl { color:var(--text-dim); font-size:10px; text-transform:uppercase; }
+.comp-insp-side { flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; }
+.comp-insp-side-header { font-size:12px; font-weight:700; padding:6px 10px; border-radius:var(--radius); }
+.comp-insp-side-header.side-a { background:rgba(108,140,255,.15); color:#6c8cff; }
+.comp-insp-side-header.side-b { background:rgba(244,114,182,.15); color:#f472b6; }
+.comp-insp-steps-wrap { display:flex; gap:16px; }
+.comp-insp-steps-col { flex:1; min-width:0; }
+.comp-step-list { max-height:400px; overflow-y:auto; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); }
+.comp-step-row { display:flex; gap:6px; align-items:center; padding:4px 8px; border-bottom:1px solid var(--border); cursor:pointer; font-size:11px; }
+.comp-step-row:hover { background:var(--surface); }
+.comp-step-row.selected { background:var(--surface); border-left:3px solid var(--accent); }
+.comp-step-row .snum { color:var(--text-dim); min-width:20px; }
+.comp-step-row .stool { font-weight:600; }
+.comp-step-row .sfile { color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:120px; }
+.comp-detail-pair { display:flex; gap:16px; margin-top:12px; }
+.comp-detail-panel { flex:1; min-width:0; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:10px; max-height:500px; overflow-y:auto; }
+.comp-detail-panel h5 { font-size:11px; color:var(--text-dim); text-transform:uppercase; margin:8px 0 4px; }
+.comp-detail-panel h5:first-child { margin-top:0; }
+.comp-detail-panel pre { white-space:pre-wrap; word-break:break-word; font-size:11px; line-height:1.4; margin:0; padding:6px; background:var(--surface); border-radius:4px; max-height:200px; overflow-y:auto; }
+.ci-row { cursor:pointer; }
+.ci-row:hover { background:var(--surface) !important; }
+
 /* SVG */
 .chart-bar { transition:opacity .15s; }
 .chart-bar:hover { opacity:.8; }
@@ -240,17 +265,28 @@ tr.clickable { cursor:pointer; }
     <button class="tab active" data-tab="dashboard">Experiment Evaluation</button>
     <button class="tab" data-tab="comparison">Experiment Comparison</button>
     <button class="tab" data-tab="dpo">Data Collection</button>
+    <button class="tab" data-tab="rollout">Rollout Monitor</button>
   </div>
 
   <!-- ── Tab: Dashboard ──────────────────────────── -->
   <div id="tab-dashboard" class="tab-pane">
     <div class="load-bar">
-      <label>Experiment directory:</label>
+      <label>Local folder:</label>
       <div class="file-pick">
         <input type="file" id="dir-input" webkitdirectory>
         <span class="lbl" id="dir-label">Select folder…</span>
       </div>
       <span class="load-status" id="load-status"></span>
+      <span style="color:var(--border);margin:0 4px;">|</span>
+      <label>Server:</label>
+      <input type="text" id="server-url" placeholder="http://host:8502" value="" style="width:160px;font:inherit;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:2px 6px;border-radius:4px;">
+      <input type="text" id="server-token" placeholder="Bearer token" style="width:120px;font:inherit;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:2px 6px;border-radius:4px;">
+      <button class="load-btn sec" id="server-connect-btn" style="font-size:12px;">Connect</button>
+      <select id="server-exp-select" style="font:inherit;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:2px 6px;border-radius:4px;min-width:160px;display:none;">
+        <option value="">Select experiment…</option>
+      </select>
+      <button class="load-btn" id="server-load-btn" style="font-size:12px;display:none;">Load from Server</button>
+      <span class="load-status" id="server-status"></span>
       <span style="color:var(--border);margin:0 4px;">|</span>
       <label style="color:var(--text-dim);font-size:12px;">Golden Patches:</label>
       <div class="file-pick">
@@ -263,8 +299,8 @@ tr.clickable { cursor:pointer; }
     <div class="content" id="dashboard-content">
       <div class="loading" id="dashboard-loading" style="display:none">Loading and parsing data...</div>
       <div id="dashboard-empty" style="padding:40px;text-align:center;color:var(--text-dim);">
-        Click <strong>Select folder…</strong> and choose an experiment directory (e.g. <code>Qwen3-8B/</code>).<br>
-        The analyzer will automatically find <code>*_n1.jsonl</code> and <code>chat_completions/eval.jsonl</code>.
+        Click <strong>Select folder…</strong> to load from a local experiment directory, or enter a server URL and click <strong>Connect</strong> to load from the expdata database.<br>
+        Local mode expects <code>*_n1.jsonl</code> and <code>chat_completions/eval.jsonl</code>.
       </div>
       <div id="dashboard-results" style="display:none"></div>
       <div id="eval-inspector" style="display:none">
@@ -293,6 +329,10 @@ tr.clickable { cursor:pointer; }
             <input type="file" class="comp-dir-input" webkitdirectory>
             <span class="lbl comp-dir-label">Select folder…</span>
           </div>
+          <div style="margin-bottom:8px;font-size:12px;color:var(--text-dim);">— or from server —</div>
+          <select class="comp-server-select" style="width:100%;font:inherit;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:4px;margin-bottom:8px;">
+            <option value="">Select from server…</option>
+          </select>
           <input type="text" class="comp-label" placeholder="Display name (optional)" style="width:100%;">
         </div>
         <!-- Exp B -->
@@ -302,38 +342,83 @@ tr.clickable { cursor:pointer; }
             <input type="file" class="comp-dir-input" webkitdirectory>
             <span class="lbl comp-dir-label">Select folder…</span>
           </div>
+          <div style="margin-bottom:8px;font-size:12px;color:var(--text-dim);">— or from server —</div>
+          <select class="comp-server-select" style="width:100%;font:inherit;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:4px;margin-bottom:8px;">
+            <option value="">Select from server…</option>
+          </select>
           <input type="text" class="comp-label" placeholder="Display name (optional)" style="width:100%;">
         </div>
       </div>
       <button class="load-btn" id="comp-load-btn">Compare Experiments</button>
       <span class="load-status" id="comp-status"></span>
       <div id="comp-results" style="margin-top:16px;"></div>
+      <div id="comp-inspector" style="display:none;margin-top:16px;">
+        <div class="load-bar" style="margin-bottom:8px;">
+          <button class="load-btn sec" onclick="UI.backToComparison()" style="font-size:12px;">← Back to Comparison</button>
+          <span id="comp-insp-title" style="font-size:13px;font-weight:600;"></span>
+        </div>
+        <div id="comp-insp-content"></div>
+      </div>
     </div>
   </div>
 
   <!-- ── Tab: Data Collection ──────────────────────── -->
   <div id="tab-dpo" class="tab-pane hidden">
     <div class="load-bar">
-      <label>Collection directory:</label>
+      <label>Local folder:</label>
       <div class="file-pick">
         <input type="file" id="dpo-dir-input" webkitdirectory>
         <span class="lbl" id="dpo-dir-label">Select folder…</span>
       </div>
       <span class="load-status" id="dpo-load-status"></span>
       <span style="color:var(--border);margin:0 4px;">|</span>
+      <label>Server:</label>
+      <select id="dpo-server-exp-select" style="font:inherit;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:2px 6px;border-radius:4px;min-width:160px;">
+        <option value="">Select experiment…</option>
+      </select>
+      <button class="load-btn sec" id="dpo-server-load-btn" style="font-size:12px;">Load from Server</button>
+      <span class="load-status" id="dpo-server-status"></span>
+      <span style="color:var(--border);margin:0 4px;">|</span>
       <button id="dpo-golden-toggle-btn" class="golden-btn" title="Toggle golden patch analysis (load from Dashboard tab first)">✨ Golden Patch</button>
       <span style="font-size:12px;color:var(--text-dim);" id="dpo-golden-load-status"></span>
     </div>
     <div class="content" id="dpo-content">
       <div id="dpo-empty" style="padding:40px;text-align:center;color:var(--text-dim);">
-        Select a data collection directory (e.g. <code>collected-dpo-100-131072/</code>).<br>
-        The analyzer will find <code>*.pos.jsonl</code> and <code>*.neg.jsonl</code> files automatically.
+        Select a local collection directory (e.g. <code>collected-dpo-100-131072/</code>), or select a collection experiment from the server.<br>
+        Local mode expects <code>*.pos.jsonl</code> and <code>*.neg.jsonl</code> files.
       </div>
       <div id="dpo-results" style="display:none">
         <!-- Macro dashboard -->
         <div id="dpo-dashboard"></div>
         <!-- Micro inspector -->
         <div id="dpo-inspector" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Rollout Monitor ────────────────────── -->
+  <div id="tab-rollout" class="tab-pane hidden">
+    <div class="load-bar">
+      <label>Rollout folder:</label>
+      <div class="file-pick">
+        <input type="file" id="rollout-dir-input" webkitdirectory>
+        <span class="lbl" id="rollout-dir-label">Select folder…</span>
+      </div>
+      <span class="load-status" id="rollout-load-status"></span>
+    </div>
+    <div class="content" id="rollout-content">
+      <div id="rollout-empty" style="padding:40px;text-align:center;color:var(--text-dim);">
+        Select a folder containing numbered <code>.jsonl</code> files (e.g. <code>0.jsonl</code>, <code>1.jsonl</code>, …).<br>
+        Each file represents one training step's rollouts.
+      </div>
+      <div id="rollout-dashboard" style="display:none"></div>
+      <div id="rollout-inspector" style="display:none">
+        <div class="load-bar" style="margin-bottom:8px;">
+          <button class="load-btn sec" onclick="RolloutMonitor.backToDashboard()" style="font-size:12px;">← Back to Dashboard</button>
+          <span id="rollout-insp-title" style="font-size:13px;font-weight:600;"></span>
+        </div>
+        <div id="rollout-traj-list"></div>
+        <div id="rollout-traj-detail" style="margin-top:12px;"></div>
       </div>
     </div>
   </div>
@@ -792,6 +877,77 @@ const CR = {
     return svg;
   },
 
+  // Multi-series line chart with legend and clickable x-axis points
+  multiLineChart(series, { width=500, height=240, yLabel='', yPct=false, onClick=null }={}) {
+    if (!series.length || series.every(s=>!s.data.length)) return '<div style="color:var(--text-dim);padding:20px;font-size:12px;">No data</div>';
+    const mg = {top:15, right:20, bottom:35, left:45};
+    const legendH = Math.ceil(series.length / 3) * 18 + 8;
+    const totalH = height + legendH;
+    const w = width-mg.left-mg.right, h = height-mg.top-mg.bottom;
+    const allPts = series.flatMap(s=>s.data);
+    const minX = Math.min(...allPts.map(d=>d.x)), maxX = Math.max(...allPts.map(d=>d.x));
+    const maxY = Math.max(...allPts.map(d=>d.y), 0.01);
+    const rangeX = maxX-minX||1;
+    const xOf = d => mg.left + ((d.x-minX)/rangeX)*w;
+    const yOf = d => mg.top + h - (d.y/maxY)*h;
+
+    let svg = `<svg viewBox="0 0 ${width} ${totalH}" xmlns="http://www.w3.org/2000/svg" style="cursor:${onClick?'crosshair':'default'};">`;
+    svg += `<line x1="${mg.left}" y1="${mg.top}" x2="${mg.left}" y2="${mg.top+h}" class="chart-axis"/>`;
+    svg += `<line x1="${mg.left}" y1="${mg.top+h}" x2="${mg.left+w}" y2="${mg.top+h}" class="chart-axis"/>`;
+    for (let i=0;i<=4;i++) {
+      const y = mg.top+h-(i/4)*h;
+      svg += `<line x1="${mg.left}" y1="${y}" x2="${mg.left+w}" y2="${y}" class="chart-grid"/>`;
+      const lbl = yPct ? (maxY*i/4*100).toFixed(0)+'%' : this.fmtN(Math.round(maxY*i/4));
+      svg += `<text x="${mg.left-5}" y="${y+4}" text-anchor="end" class="chart-label" style="font-size:9px;">${lbl}</text>`;
+    }
+    if (yLabel) svg += `<text x="${mg.left-35}" y="${mg.top+h/2}" text-anchor="middle" transform="rotate(-90,${mg.left-35},${mg.top+h/2})" class="chart-label" style="font-size:9px;">${yLabel}</text>`;
+
+    // X-axis labels
+    const xVals = [...new Set(allPts.map(d=>d.x))].sort((a,b)=>a-b);
+    const xStep = Math.max(1, Math.ceil(xVals.length/12));
+    xVals.forEach((x,i) => {
+      if (i%xStep===0) {
+        const px = mg.left+((x-minX)/rangeX)*w;
+        svg += `<text x="${px}" y="${mg.top+h+14}" text-anchor="middle" class="chart-label" style="font-size:9px;">${x}</text>`;
+      }
+    });
+
+    // Lines
+    series.forEach((s,si) => {
+      if (!s.data.length) return;
+      const sorted = [...s.data].sort((a,b)=>a.x-b.x);
+      const pts = sorted.map(d=>`${xOf(d)},${yOf(d)}`).join(' ');
+      svg += `<polyline points="${pts}" fill="none" stroke="${s.color||this.colors[si%this.colors.length]}" stroke-width="1.5" opacity="0.85"/>`;
+      // Dots
+      sorted.forEach(d => {
+        svg += `<circle cx="${xOf(d)}" cy="${yOf(d)}" r="2.5" fill="${s.color||this.colors[si%this.colors.length]}" opacity="0.6"><title>Step ${d.x}: ${s.label} = ${yPct?(d.y*100).toFixed(1)+'%':d.y}</title></circle>`;
+      });
+    });
+
+    // Clickable invisible rects for each x value (for drill-down)
+    if (onClick) {
+      const slotW = w / Math.max(xVals.length, 1);
+      xVals.forEach((x, i) => {
+        const px = mg.left + ((x-minX)/rangeX)*w - slotW/2;
+        svg += `<rect x="${px}" y="${mg.top}" width="${slotW}" height="${h}" fill="transparent" style="cursor:pointer;" onclick="${onClick}(${x})"><title>Click to inspect step ${x}</title></rect>`;
+      });
+    }
+
+    // Legend
+    const ly = height + 4;
+    const colW = Math.floor(width / 3);
+    series.forEach((s, i) => {
+      const col = i % 3, row = Math.floor(i / 3);
+      const lx = mg.left + col * colW;
+      const lyi = ly + row * 18;
+      svg += `<rect x="${lx}" y="${lyi}" width="9" height="9" fill="${s.color||this.colors[i%this.colors.length]}" rx="2"/>`;
+      svg += `<text x="${lx+13}" y="${lyi+9}" class="chart-label" style="font-size:10px;">${s.label}</text>`;
+    });
+
+    svg += '</svg>';
+    return svg;
+  },
+
   histogram(vA, vB, { width=400, height=200, labelA='A', labelB='B', colorA='#4ade80', colorB='#f87171', bins=15 }={}) {
     const all=[...vA,...vB];
     if (!all.length) return '<div style="color:var(--text-dim);padding:20px;font-size:12px;">No data</div>';
@@ -886,6 +1042,15 @@ const UI = {
       DPO.loadFromDirectory(files);
     });
 
+    // Rollout Monitor directory picker
+    document.getElementById('rollout-dir-input').addEventListener('change', e => {
+      const files = e.target.files;
+      if (!files.length) return;
+      const name = files[0].webkitRelativePath.split('/')[0];
+      document.getElementById('rollout-dir-label').textContent = name;
+      RolloutMonitor.loadFolder(files);
+    });
+
     document.getElementById('dpo-golden-toggle-btn').addEventListener('click', () => {
       if (!UI.state.goldenPatches) return;
       UI.state.goldenHighlight = !UI.state.goldenHighlight;
@@ -910,6 +1075,17 @@ const UI = {
         e.target.closest('.file-pick').querySelector('.comp-dir-label').textContent = name;
       });
     });
+
+    // ── Server integration ──
+    // Restore saved server config from localStorage
+    const savedUrl = localStorage.getItem('expdata_server_url');
+    const savedToken = localStorage.getItem('expdata_server_token');
+    if (savedUrl) document.getElementById('server-url').value = savedUrl;
+    if (savedToken) document.getElementById('server-token').value = savedToken;
+
+    document.getElementById('server-connect-btn').addEventListener('click', () => ServerLoader.connect());
+    document.getElementById('server-load-btn').addEventListener('click', () => ServerLoader.loadEvalExperiment());
+    document.getElementById('dpo-server-load-btn').addEventListener('click', () => ServerLoader.loadCollectionExperiment());
 
     // Golden patch highlighting
     document.getElementById('golden-file-input').addEventListener('change', async e => {
@@ -1249,7 +1425,7 @@ const UI = {
 
   switchTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    ['dashboard','comparison','dpo'].forEach(t => {
+    ['dashboard','comparison','dpo','rollout'].forEach(t => {
       document.getElementById('tab-' + t).classList.toggle('hidden', t !== tab);
     });
   },
@@ -1867,32 +2043,49 @@ const UI = {
 
     for (const box of document.querySelectorAll('.comp-exp-box')) {
       const dirInput = box.querySelector('.comp-dir-input');
+      const serverSelect = box.querySelector('.comp-server-select');
       const labelInput = box.querySelector('.comp-label');
       const files = Array.from(dirInput.files || []);
-      if (!files.length) continue;
+      const serverExpId = serverSelect ? serverSelect.value : '';
 
-      const dirName = files[0].webkitRelativePath.split('/')[0];
-      const name = labelInput?.value.trim() || dirName;
-      const metaFile = files.find(f => f.name.endsWith('_n1.jsonl'));
-      const trajFile = files.find(f => f.webkitRelativePath.replace(/\\/g, '/').includes('chat_completions/eval.jsonl'));
+      if (serverExpId) {
+        // Load from server
+        const expInfo = ServerLoader._experiments.find(e => e.id === parseInt(serverExpId));
+        const name = labelInput?.value.trim() || (expInfo ? expInfo.name : `#${serverExpId}`);
+        status.textContent = `Loading ${name} from server…`;
+        try {
+          const { metadata, trajectories } = await ServerLoader.loadEvalForComparison(serverExpId);
+          const analysis = MacroAnalyzer.analyze(metadata, trajectories);
+          exps.push({ name, analysis, paired: analysis.paired });
+        } catch (e) {
+          status.textContent = `Error loading ${name} from server: ${e.message}`;
+          return;
+        }
+      } else if (files.length) {
+        // Load from local folder
+        const dirName = files[0].webkitRelativePath.split('/')[0];
+        const name = labelInput?.value.trim() || dirName;
+        const metaFile = files.find(f => f.name.endsWith('_n1.jsonl'));
+        const trajFile = files.find(f => f.webkitRelativePath.replace(/\\/g, '/').includes('chat_completions/eval.jsonl'));
 
-      if (!metaFile || !trajFile) {
-        status.textContent = `Error in "${name}": missing _n1.jsonl or chat_completions/eval.jsonl`;
-        return;
-      }
-      status.textContent = `Parsing ${name}…`;
-      try {
-        const metadata = await DataParser.parseJSONL(metaFile);
-        const trajectories = await DataParser.parseJSONL(trajFile);
-        const analysis = MacroAnalyzer.analyze(metadata, trajectories);
-        exps.push({ name, analysis, paired: analysis.paired });
-      } catch(e) {
-        status.textContent = `Error loading ${name}: ${e.message}`;
-        return;
+        if (!metaFile || !trajFile) {
+          status.textContent = `Error in "${name}": missing _n1.jsonl or chat_completions/eval.jsonl`;
+          return;
+        }
+        status.textContent = `Parsing ${name}…`;
+        try {
+          const metadata = await DataParser.parseJSONL(metaFile);
+          const trajectories = await DataParser.parseJSONL(trajFile);
+          const analysis = MacroAnalyzer.analyze(metadata, trajectories);
+          exps.push({ name, analysis, paired: analysis.paired });
+        } catch(e) {
+          status.textContent = `Error loading ${name}: ${e.message}`;
+          return;
+        }
       }
     }
 
-    if (exps.length < 2) { status.textContent = 'Select folders for at least 2 experiments.'; return; }
+    if (exps.length < 2) { status.textContent = 'Select folders or server experiments for at least 2 experiments.'; return; }
     this.renderComparison(exps);
     status.textContent = 'Comparison ready.';
   },
@@ -1900,6 +2093,7 @@ const UI = {
   renderComparison(exps) {
     const container = document.getElementById('comp-results');
     const [a, b] = exps;
+    this.state.compExps = exps; // store for inspector
     const sa = a.analysis.summary, sb = b.analysis.summary;
     let html = '';
 
@@ -2012,7 +2206,7 @@ const UI = {
       const dis=ra!=='-'&&rb!=='-'&&ra!==rb;
       const bA=ra==='-'?'':(`<span class="badge ${ra>0?'bg':'br'}">${ra}</span>`);
       const bB=rb==='-'?'':(`<span class="badge ${rb>0?'bg':'br'}">${rb}</span>`);
-      html+=`<tr class="ci-row" data-dis="${dis}"><td>${id}</td><td>${v.repo||''}</td><td>${bA}</td><td>${bB}</td><td>${dis?(rb>ra?'<span class="dpos">⬆</span>':'<span class="dneg">⬇</span>'):'-'}</td></tr>`;
+      html+=`<tr class="ci-row" data-dis="${dis}" onclick="UI.showCompInspector('${id}')"><td>${id}</td><td>${v.repo||''}</td><td>${bA}</td><td>${bB}</td><td>${dis?(rb>ra?'<span class="dpos">⬆</span>':'<span class="dneg">⬇</span>'):'-'}</td></tr>`;
     });
     html += '</tbody></table></div>';
 
@@ -2045,6 +2239,134 @@ const UI = {
     svg+=`<text x="${mg.left+112}" y="10" class="chart-label" style="font-size:10px;">${nameB}</text>`;
     svg+='</svg>';
     return svg;
+  },
+
+  // ─── Comparison Inspector ─────────────────────────────────
+  backToComparison() {
+    document.getElementById('comp-results').style.display = '';
+    document.getElementById('comp-inspector').style.display = 'none';
+  },
+
+  showCompInspector(instanceId) {
+    const exps = this.state.compExps;
+    if (!exps || exps.length < 2) return;
+    const [a, b] = exps;
+    const pA = a.paired.find(p => p.instance_id === instanceId);
+    const pB = b.paired.find(p => p.instance_id === instanceId);
+
+    document.getElementById('comp-results').style.display = 'none';
+    document.getElementById('comp-inspector').style.display = '';
+    document.getElementById('comp-insp-title').textContent = instanceId;
+
+    // Store for step detail clicks
+    this.state.compInsp = { instanceId, pA, pB, expA: a, expB: b };
+
+    const container = document.getElementById('comp-insp-content');
+    let html = '';
+
+    // Header with metadata
+    html += '<div class="comp-insp-header">';
+    html += `<div class="fld"><div class="flbl">Instance</div><div class="fval">${this.esc(instanceId)}</div></div>`;
+    html += `<div class="fld"><div class="flbl">Repo</div><div class="fval">${this.esc((pA||pB)?.repo||'-')}</div></div>`;
+    html += `<div class="fld"><div class="flbl">${this.esc(a.name)}</div><div class="fval"><span class="badge ${pA&&pA.reward>0?'bg':'br'}">${pA?pA.reward:'N/A'}</span> ${pA?pA.termination_reason:''}</div></div>`;
+    html += `<div class="fld"><div class="flbl">${this.esc(b.name)}</div><div class="fval"><span class="badge ${pB&&pB.reward>0?'bg':'br'}">${pB?pB.reward:'N/A'}</span> ${pB?pB.termination_reason:''}</div></div>`;
+    html += '</div>';
+
+    // Side-by-side step lists (top part — general step overview)
+    html += '<h3 style="margin:8px 0;">Step Overview</h3>';
+    html += '<div class="comp-insp-steps-wrap">';
+    html += this._renderCompStepCol('a', a.name, pA);
+    html += this._renderCompStepCol('b', b.name, pB);
+    html += '</div>';
+
+    // Side-by-side detail panels (bottom part — action/observation details)
+    html += '<h3 style="margin:12px 0 8px;">Step Detail</h3>';
+    html += '<div class="comp-detail-pair">';
+    html += `<div class="comp-detail-panel" id="comp-detail-a"><div style="color:var(--text-dim);text-align:center;padding:20px;">Click a step in ${this.esc(a.name)} above</div></div>`;
+    html += `<div class="comp-detail-panel" id="comp-detail-b"><div style="color:var(--text-dim);text-align:center;padding:20px;">Click a step in ${this.esc(b.name)} above</div></div>`;
+    html += '</div>';
+
+    container.innerHTML = html;
+  },
+
+  _renderCompStepCol(side, name, paired) {
+    const headerCls = side === 'a' ? 'side-a' : 'side-b';
+    let html = '<div class="comp-insp-steps-col">';
+    html += `<div class="comp-insp-side-header ${headerCls}">${this.esc(name)} — ${paired ? paired.numSteps + ' steps' : 'N/A'}</div>`;
+    html += '<div class="comp-step-list">';
+    if (!paired || !paired.steps || !paired.steps.length) {
+      html += '<div style="padding:12px;color:var(--text-dim);text-align:center;">No trajectory for this instance</div>';
+    } else {
+      paired.steps.forEach((step, i) => {
+        const toolKey = step.toolName + (step.parameters.command ? ':' + step.parameters.command : '');
+        const filePath = step.parameters.path || step.parameters.file || '';
+        const fileShort = filePath ? filePath.split('/').slice(-1)[0] : '';
+        const icon = step.hasError ? '❌' : step.isTruncated ? '⚠️' : '✅';
+        const toolColor = this.TOOL_COLORS[step.toolName] || '#8b90a5';
+        html += `<div class="comp-step-row" data-side="${side}" data-step="${i}" onclick="UI.showCompStepDetail('${side}',${i})">`;
+        html += `<span class="snum">${i + 1}</span>`;
+        html += `<span class="stool" style="color:${toolColor};">${this.CR_trunc(toolKey, 20)}</span>`;
+        html += `<span class="sfile">${this.esc(fileShort)}</span>`;
+        html += `<span>${icon}</span>`;
+        html += '</div>';
+      });
+    }
+    html += '</div></div>';
+    return html;
+  },
+
+  showCompStepDetail(side, stepIndex) {
+    const { pA, pB } = this.state.compInsp;
+    const paired = side === 'a' ? pA : pB;
+    if (!paired || !paired.steps) return;
+    const step = paired.steps[stepIndex];
+    if (!step) return;
+
+    // Highlight selected row
+    document.querySelectorAll(`.comp-step-row[data-side="${side}"]`).forEach(r => r.classList.remove('selected'));
+    document.querySelector(`.comp-step-row[data-side="${side}"][data-step="${stepIndex}"]`)?.classList.add('selected');
+
+    const panel = document.getElementById(`comp-detail-${side}`);
+    const toolKey = step.toolName + (step.parameters.command ? ':' + step.parameters.command : '');
+    const toolColor = this.TOOL_COLORS[step.toolName] || '#8b90a5';
+
+    let html = '';
+
+    // Step header
+    html += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">`;
+    html += `<strong>Step ${stepIndex + 1}</strong>`;
+    html += `<span style="color:${toolColor};font-weight:600;font-size:12px;">${this.esc(toolKey)}</span>`;
+    if (step.parameters.path) html += `<span class="badge bb" style="font-size:10px;">${this.esc(step.parameters.path.split('/').slice(-2).join('/'))}</span>`;
+    if (step.hasError) html += '<span class="badge br" style="font-size:10px;">Error</span>';
+    if (step.isTruncated) html += '<span class="badge by" style="font-size:10px;">Truncated</span>';
+    html += '</div>';
+
+    // Think
+    if (step.thought) {
+      const thinkTrunc = step.thought.length > 500 ? step.thought.substring(0, 500) + '\n… (truncated)' : step.thought;
+      html += '<h5>Think</h5>';
+      html += `<pre>${this.esc(thinkTrunc)}</pre>`;
+    }
+
+    // Action
+    html += '<h5>Action</h5>';
+    const actionDisplay = (step.rawAction || '').length > 2000
+      ? step.rawAction.substring(0, 2000) + '\n… (truncated)'
+      : (step.rawAction || '(empty)');
+    html += `<pre>${this.esc(actionDisplay)}</pre>`;
+
+    // Diff preview for str_replace
+    if (step.parameters.command === 'str_replace' && step.parameters.old_str != null) {
+      html += '<h5>Diff Preview</h5>';
+      html += `<pre style="background:#1a1a2a;"><span style="color:var(--red);">- ${this.esc((step.parameters.old_str||'').substring(0,800))}</span>\n<span style="color:var(--green);">+ ${this.esc((step.parameters.new_str||'').substring(0,800))}</span></pre>`;
+    }
+
+    // Observation
+    html += '<h5>Observation</h5>';
+    const obsDisplay = step.observation.length > 2000 ? step.observation.substring(0, 2000) + '\n… (truncated)' : step.observation;
+    html += `<pre>${this.esc(obsDisplay)}</pre>`;
+
+    panel.innerHTML = html;
   }
 };
 
@@ -3059,6 +3381,743 @@ const DPO = {
 
     html += '</div>';
     panel.innerHTML = html;
+  },
+};
+
+// ============================================================
+// SERVER LOADER — fetch experiments from expdata service
+// ============================================================
+const ServerLoader = {
+  _url: '',
+  _token: '',
+  _experiments: [],
+
+  _headers() {
+    const h = { 'Content-Type': 'application/json' };
+    if (this._token) h['Authorization'] = `Bearer ${this._token}`;
+    return h;
+  },
+
+  async _api(path) {
+    const resp = await fetch(this._url + path, { headers: this._headers() });
+    if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);
+    return resp.json();
+  },
+
+  async connect() {
+    const urlInput = document.getElementById('server-url');
+    const tokenInput = document.getElementById('server-token');
+    const status = document.getElementById('server-status');
+    this._url = urlInput.value.trim().replace(/\/$/, '');
+    this._token = tokenInput.value.trim();
+
+    if (!this._url) { status.textContent = 'Enter a server URL'; return; }
+
+    localStorage.setItem('expdata_server_url', this._url);
+    localStorage.setItem('expdata_server_token', this._token);
+
+    status.textContent = 'Connecting…';
+    try {
+      const data = await this._api('/api/v1/experiments?limit=200');
+      this._experiments = data.experiments || [];
+      status.textContent = `Connected: ${this._experiments.length} experiments`;
+      this._populateSelects();
+    } catch (e) {
+      status.textContent = 'Error: ' + e.message;
+      console.error(e);
+    }
+  },
+
+  _populateSelects() {
+    const evalExps = this._experiments.filter(e => e.type === 'eval');
+    const collExps = this._experiments.filter(e => e.type === 'collection');
+    const allExps = this._experiments;
+
+    // Dashboard eval select
+    const evalSel = document.getElementById('server-exp-select');
+    evalSel.innerHTML = '<option value="">Select experiment…</option>' +
+      evalExps.map(e => `<option value="${e.id}">#${e.id} ${this._esc(e.name)} [${e.status}]</option>`).join('');
+    evalSel.style.display = '';
+    document.getElementById('server-load-btn').style.display = '';
+
+    // DPO collection select
+    const dpoSel = document.getElementById('dpo-server-exp-select');
+    dpoSel.innerHTML = '<option value="">Select experiment…</option>' +
+      collExps.map(e => `<option value="${e.id}">#${e.id} ${this._esc(e.name)} [${e.status}]</option>`).join('');
+
+    // Comparison selects
+    document.querySelectorAll('.comp-server-select').forEach(sel => {
+      sel.innerHTML = '<option value="">Select from server…</option>' +
+        allExps.map(e => `<option value="${e.id}">#${e.id} ${this._esc(e.name)}</option>`).join('');
+    });
+  },
+
+  _esc(s) {
+    if (!s) return '';
+    const d = document.createElement('span');
+    d.textContent = s;
+    return d.innerHTML;
+  },
+
+  // ── Dashboard: load eval experiment ──
+  async loadEvalExperiment() {
+    const expId = document.getElementById('server-exp-select').value;
+    if (!expId) return;
+    const status = document.getElementById('server-status');
+    status.textContent = 'Loading results…';
+    try {
+      // Fetch all eval results (paginated)
+      const metadata = [];
+      let offset = 0;
+      while (true) {
+        const page = await this._api(`/api/v1/experiments/${expId}/results?limit=1000&offset=${offset}`);
+        metadata.push(...page.results);
+        if (page.results.length < 1000) break;
+        offset += 1000;
+      }
+      if (!metadata.length) { status.textContent = 'No eval results found for this experiment.'; return; }
+
+      // Convert server results to the format expected by MacroAnalyzer
+      // MacroAnalyzer expects metadata items with: uid, instance_id, reward, repo, termination_reason, sample_idx, data_source, n_samples
+      const metadataConverted = metadata.map(r => ({
+        uid: r.uid || r.instance_id,
+        instance_id: r.instance_id,
+        reward: r.reward,
+        repo: r.repo || '',
+        termination_reason: r.termination_reason || '',
+        sample_idx: r.sample_idx || 0,
+        data_source: r.repo || '',
+        n_samples: 1,
+      }));
+
+      // Fetch trajectories (with messages) for the step-level viewer
+      status.textContent = 'Loading trajectories…';
+      const trajectories = [];
+      offset = 0;
+      while (true) {
+        const page = await this._api(`/api/v1/experiments/${expId}/trajectories?limit=200&offset=${offset}`);
+        if (!page.trajectories.length) break;
+        // Fetch full messages for each trajectory
+        for (const t of page.trajectories) {
+          try {
+            const full = await this._api(`/api/v1/experiments/${expId}/trajectories/${t.id}`);
+            trajectories.push(full.messages || []);
+          } catch (_) {
+            trajectories.push([]); // empty placeholder if messages can't be loaded
+          }
+        }
+        offset += 200;
+        status.textContent = `Loading trajectories… ${trajectories.length}`;
+        if (page.trajectories.length < 200) break;
+      }
+
+      // If no trajectories, create empty arrays matching metadata length
+      while (trajectories.length < metadataConverted.length) {
+        trajectories.push([]);
+      }
+
+      const expInfo = this._experiments.find(e => e.id === parseInt(expId));
+      const name = expInfo ? expInfo.name : `Server #${expId}`;
+      status.textContent = `Parsing ${metadataConverted.length} results…`;
+      await UI.processData(metadataConverted, trajectories, name, status);
+    } catch (e) {
+      status.textContent = 'Error: ' + e.message;
+      console.error(e);
+    }
+  },
+
+  // ── Load eval data for comparison (returns {metadata, trajectories, name}) ──
+  async loadEvalForComparison(expId) {
+    const metadata = [];
+    let offset = 0;
+    while (true) {
+      const page = await this._api(`/api/v1/experiments/${expId}/results?limit=1000&offset=${offset}`);
+      metadata.push(...page.results);
+      if (page.results.length < 1000) break;
+      offset += 1000;
+    }
+    const converted = metadata.map(r => ({
+      uid: r.uid || r.instance_id,
+      instance_id: r.instance_id,
+      reward: r.reward,
+      repo: r.repo || '',
+      termination_reason: r.termination_reason || '',
+      sample_idx: r.sample_idx || 0,
+      data_source: r.repo || '',
+      n_samples: 1,
+    }));
+    // Skip full trajectory fetch for comparison (only need metadata for MacroAnalyzer)
+    const trajectories = converted.map(() => []);
+    return { metadata: converted, trajectories };
+  },
+
+  // ── DPO: load collection experiment ──
+  async loadCollectionExperiment() {
+    const expId = document.getElementById('dpo-server-exp-select').value;
+    if (!expId) return;
+    const status = document.getElementById('dpo-server-status');
+    status.textContent = 'Loading trajectories…';
+    try {
+      DPO.reset();
+      // Fetch all trajectories with messages
+      let offset = 0;
+      const rawEntries = [];
+      while (true) {
+        const page = await this._api(`/api/v1/experiments/${expId}/trajectories?limit=200&offset=${offset}`);
+        if (!page.trajectories.length) break;
+        for (const t of page.trajectories) {
+          try {
+            const full = await this._api(`/api/v1/experiments/${expId}/trajectories/${t.id}`);
+            const label = (t.role === 'rejected' || (t.reward != null && t.reward <= 0)) ? 'neg' : 'pos';
+            rawEntries.push({
+              entry: {
+                instance_id: t.instance_id,
+                messages: full.messages || [],
+                termination_reason: t.termination_reason || '',
+              },
+              label,
+            });
+          } catch (_) {}
+        }
+        offset += 200;
+        status.textContent = `Loading trajectories… ${rawEntries.length}`;
+        if (page.trajectories.length < 200) break;
+      }
+
+      if (!rawEntries.length) { status.textContent = 'No trajectories found.'; return; }
+
+      // Process using DPO's _toTrajectory
+      const CHUNK = 3;
+      for (let i = 0; i < rawEntries.length; i += CHUNK) {
+        const chunk = rawEntries.slice(i, i + CHUNK);
+        chunk.forEach(({ entry, label }) => {
+          const traj = DPO._toTrajectory(entry, label);
+          DPO.state[label].push(traj);
+        });
+        if (i % (CHUNK * 2) === 0) {
+          status.textContent = `Parsing… ${i}/${rawEntries.length}`;
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+
+      // Group by instance
+      const all = [...DPO.state.pos, ...DPO.state.neg];
+      all.forEach(t => {
+        if (!DPO.state.byInstance[t.instance_id]) DPO.state.byInstance[t.instance_id] = { pos: [], neg: [] };
+        DPO.state.byInstance[t.instance_id][t._dpoLabel].push(t);
+      });
+
+      status.textContent = `Loaded ${DPO.state.pos.length} pos + ${DPO.state.neg.length} neg (${Object.keys(DPO.state.byInstance).length} instances)`;
+      document.getElementById('dpo-empty').style.display = 'none';
+      document.getElementById('dpo-results').style.display = '';
+      DPO.renderDashboard();
+    } catch (e) {
+      status.textContent = 'Error: ' + e.message;
+      console.error(e);
+    }
+  },
+};
+
+// ============================================================
+// ROLLOUT MONITOR
+// ============================================================
+const RolloutMonitor = {
+  state: {
+    files: null,        // Map<stepNum, File>
+    stepStats: [],      // [{step, trajCount, patterns:{...}}]
+    currentStep: null,
+    trajSummaries: [],  // per-traj summaries for current step
+    currentTrajIndex: null,
+  },
+
+  PATTERNS: [
+    { key: 'unclosedThink', label: 'Unclosed &lt;think&gt;', color: '#f87171' },
+    { key: 'emptyThink',    label: 'Empty &lt;think&gt;',    color: '#fb923c' },
+    { key: 'textOnly',      label: 'Text-only step',   color: '#fbbf24' },
+    { key: 'errors',        label: 'Exec error',       color: '#f472b6' },
+    { key: 'repeats',       label: 'Repeated action',  color: '#a78bfa' },
+    { key: 'clipped',       label: 'Response clipped',  color: '#818cf8' },
+    { key: 'noObs',         label: 'No observation',   color: '#22d3ee' },
+  ],
+
+  async loadFolder(fileList) {
+    const status = document.getElementById('rollout-load-status');
+    status.textContent = 'Scanning files…';
+
+    // Group .jsonl files by step number
+    const files = Array.from(fileList);
+    this.state.files = new Map();
+    for (const f of files) {
+      const basename = f.name.replace(/\.jsonl$/, '');
+      const stepNum = parseInt(basename, 10);
+      if (!isNaN(stepNum) && f.name.endsWith('.jsonl')) {
+        this.state.files.set(stepNum, f);
+      }
+    }
+    if (!this.state.files.size) {
+      status.textContent = 'No numbered .jsonl files found.';
+      return;
+    }
+
+    const steps = [...this.state.files.keys()].sort((a, b) => a - b);
+    status.textContent = `Found ${steps.length} step files. Scanning patterns…`;
+    await new Promise(r => setTimeout(r, 10));
+
+    // Phase 1: lightweight scan of each file
+    this.state.stepStats = [];
+    for (let si = 0; si < steps.length; si++) {
+      const step = steps[si];
+      const file = this.state.files.get(step);
+      const text = await file.text();
+      const stat = this.scanFileText(text, step);
+      this.state.stepStats.push(stat);
+
+      if (si % 3 === 0) {
+        status.textContent = `Scanning step ${step} (${si + 1}/${steps.length})…`;
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    status.textContent = `${steps.length} steps scanned (${this.state.stepStats.reduce((a, s) => a + s.trajCount, 0)} total rollouts)`;
+    document.getElementById('rollout-empty').style.display = 'none';
+    document.getElementById('rollout-dashboard').style.display = '';
+    this.renderDashboard();
+  },
+
+  // Lightweight per-file scan: extract pattern counts without retaining messages
+  scanFileText(text, step) {
+    const lines = text.trim().split('\n');
+    const patterns = { unclosedThink: 0, emptyThink: 0, textOnly: 0, errors: 0, repeats: 0, clipped: 0, noObs: 0 };
+    let trajCount = 0;
+
+    for (const line of lines) {
+      let msgs;
+      try {
+        const obj = JSON.parse(line);
+        msgs = Array.isArray(obj) ? obj : (obj.messages || []);
+      } catch (_) { continue; }
+      trajCount++;
+
+      // Scan assistant/user message pairs — use flags (per-trajectory, not per-step)
+      let prevAction = null;
+      const flags = { unclosedThink: false, emptyThink: false, textOnly: false, errors: false, repeats: false, clipped: false, noObs: false };
+      for (let i = 0; i < msgs.length; i++) {
+        const m = msgs[i];
+        if (m.role !== 'assistant') continue;
+        const content = m.content || '';
+        const obs = (i + 1 < msgs.length && msgs[i + 1].role === 'user') ? (msgs[i + 1].content || '') : '';
+
+        const opens = (content.match(/<think>/g) || []).length;
+        const closes = (content.match(/<\/think>/g) || []).length;
+        if (opens > closes) flags.unclosedThink = true;
+        if (/<think>\s*<\/think>/.test(content)) flags.emptyThink = true;
+        if (!/<function=\w+>/.test(content)) flags.textOnly = true;
+
+        const actionMatch = content.match(/<function=\w+>[\s\S]*?<\/function>/);
+        const action = actionMatch ? actionMatch[0] : null;
+        if (action && action === prevAction) flags.repeats = true;
+        prevAction = action;
+
+        if (obs && DataParser.detectError(obs)) flags.errors = true;
+        if (obs.includes('<response clipped>')) flags.clipped = true;
+        if (!obs && i < msgs.length - 1) flags.noObs = true;
+        if (i === msgs.length - 1) flags.noObs = true;
+      }
+      // Increment pattern counts by trajectory (0 or 1 per trajectory)
+      for (const k in flags) { if (flags[k]) patterns[k]++; }
+    }
+
+    return { step, trajCount, patterns };
+  },
+
+  renderDashboard() {
+    const stats = this.state.stepStats;
+    const container = document.getElementById('rollout-dashboard');
+
+    // Summary cards
+    const totalTrajs = stats.reduce((a, s) => a + s.trajCount, 0);
+    const totalSteps = stats.length;
+    const totals = {};
+    this.PATTERNS.forEach(p => { totals[p.key] = stats.reduce((a, s) => a + s.patterns[p.key], 0); });
+
+    let html = '<h2 style="font-size:15px;margin-bottom:14px;color:var(--text-dim);">Rollout Monitor</h2>';
+    html += '<div class="cards">';
+    html += UI.card('Steps', totalSteps);
+    html += UI.card('Total Rollouts', totalTrajs, `avg ${(totalTrajs/totalSteps).toFixed(1)}/step`);
+    this.PATTERNS.forEach(p => {
+      const v = totals[p.key];
+      const rate = totalTrajs > 0 ? (v / totalTrajs * 100).toFixed(1) + '%' : '0%';
+      html += `<div class="card"><div class="clabel">${p.label}</div><div class="cvalue" style="color:${v > 0 ? p.color : 'var(--green)'};">${v}</div><div class="csub">${rate} of rollouts</div></div>`;
+    });
+    html += '</div>';
+
+    // Charts
+    html += '<div class="charts-grid">';
+
+    // Trajectory count per step
+    html += '<div class="chart-box"><h3>Rollouts per Step</h3>';
+    html += CR.multiLineChart(
+      [{ label: 'Rollout count', color: '#6c8cff', data: stats.map(s => ({ x: s.step, y: s.trajCount })) }],
+      { width: 500, height: 220, onClick: 'RolloutMonitor.drillDown' }
+    );
+    html += '</div>';
+
+    // Per-pattern trend charts (each pattern gets its own chart showing rate over steps)
+    this.PATTERNS.forEach(p => {
+      html += `<div class="chart-box"><h3 style="color:${p.color};">${p.label} Rate</h3>`;
+      html += CR.multiLineChart(
+        [{ label: p.label, color: p.color, data: stats.map(s => ({ x: s.step, y: s.trajCount > 0 ? s.patterns[p.key] / s.trajCount : 0 })) }],
+        { width: 500, height: 200, yPct: true, onClick: 'RolloutMonitor.drillDown' }
+      );
+      html += '</div>';
+    });
+
+    // Bad patterns (affected trajectories rate) — at least one instance of pattern in a trajectory
+    // For this we'd need per-traj data which we don't have at this level.
+    // Instead show a per-pattern breakdown table
+    html += '<div class="chart-box"><h3>Pattern Summary</h3>';
+    html += '<table style="width:100%;font-size:12px;"><thead><tr><th style="text-align:left;">Pattern</th><th style="text-align:right;">Total</th><th style="text-align:right;">% of Rollouts</th></tr></thead><tbody>';
+    this.PATTERNS.forEach(p => {
+      const v = totals[p.key];
+      html += `<tr><td><span style="display:inline-block;width:10px;height:10px;background:${p.color};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>${p.label}</td>`;
+      html += `<td style="text-align:right;font-weight:600;color:${v > 0 ? p.color : 'var(--text-dim)'};">${v}</td>`;
+      html += `<td style="text-align:right;color:var(--text-dim);">${totalTrajs > 0 ? (v / totalTrajs * 100).toFixed(1) + '%' : '—'}</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+
+    html += '</div>';
+
+    // Step table
+    html += '<h3 style="margin:16px 0 8px;">Step Overview</h3>';
+    html += '<div class="tbl-wrap"><table><thead><tr>';
+    html += '<th>Step</th><th>Rollouts</th>';
+    this.PATTERNS.forEach(p => { html += `<th title="${p.label}" style="color:${p.color};">${p.key.replace(/([A-Z])/g, ' $1').trim().split(' ').map(w=>w[0]).join('').toUpperCase()}</th>`; });
+    html += '<th>Action</th></tr></thead><tbody>';
+    stats.forEach(s => {
+      html += `<tr class="clickable" onclick="RolloutMonitor.drillDown(${s.step})">`;
+      html += `<td>${s.step}</td><td>${s.trajCount}</td>`;
+      this.PATTERNS.forEach(p => {
+        const v = s.patterns[p.key];
+        html += `<td style="color:${v > 0 ? p.color : 'var(--text-dim)'};">${v}</td>`;
+      });
+      html += `<td><button class="load-btn sec" style="font-size:11px;padding:3px 10px;" onclick="event.stopPropagation();RolloutMonitor.drillDown(${s.step})">Inspect</button></td>`;
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+
+    container.innerHTML = html;
+  },
+
+  async drillDown(stepNum) {
+    const file = this.state.files.get(stepNum);
+    if (!file) return;
+
+    this.state.currentStep = stepNum;
+    this.state.currentTrajIndex = null;
+
+    const status = document.getElementById('rollout-load-status');
+    status.textContent = `Loading step ${stepNum}…`;
+
+    const text = await file.text();
+    const lines = text.trim().split('\n');
+
+    // Parse per-trajectory summaries (lightweight)
+    this.state.trajSummaries = [];
+    for (let li = 0; li < lines.length; li++) {
+      let msgs;
+      try {
+        const obj = JSON.parse(lines[li]);
+        msgs = Array.isArray(obj) ? obj : (obj.messages || []);
+      } catch (_) { continue; }
+
+      const summary = this.scanTrajectory(msgs, li);
+      this.state.trajSummaries.push(summary);
+    }
+
+    status.textContent = `Step ${stepNum}: ${this.state.trajSummaries.length} rollouts`;
+
+    // Show inspector
+    document.getElementById('rollout-dashboard').style.display = 'none';
+    document.getElementById('rollout-inspector').style.display = '';
+    document.getElementById('rollout-insp-title').textContent = `Step ${stepNum} — ${this.state.trajSummaries.length} rollouts`;
+    document.getElementById('rollout-traj-detail').innerHTML = '';
+
+    this.renderTrajList();
+  },
+
+  scanTrajectory(msgs, lineIndex) {
+    const flags = { unclosedThink: false, emptyThink: false, textOnly: false, errors: false, repeats: false, clipped: false, noObs: false };
+    let stepCount = 0;
+    let prevAction = null;
+
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m.role !== 'assistant') continue;
+      stepCount++;
+      const content = m.content || '';
+      const obs = (i + 1 < msgs.length && msgs[i + 1].role === 'user') ? (msgs[i + 1].content || '') : '';
+
+      const opens = (content.match(/<think>/g) || []).length;
+      const closes = (content.match(/<\/think>/g) || []).length;
+      if (opens > closes) flags.unclosedThink = true;
+      if (/<think>\s*<\/think>/.test(content)) flags.emptyThink = true;
+      if (!/<function=\w+>/.test(content)) flags.textOnly = true;
+
+      const actionMatch = content.match(/<function=\w+>[\s\S]*?<\/function>/);
+      const action = actionMatch ? actionMatch[0] : null;
+      if (action && action === prevAction) flags.repeats = true;
+      prevAction = action;
+
+      if (obs && DataParser.detectError(obs)) flags.errors = true;
+      if (obs.includes('<response clipped>')) flags.clipped = true;
+      if (!obs) flags.noObs = true;
+    }
+
+    // Preview: first user message after system
+    let preview = '';
+    if (msgs.length >= 2) {
+      const userMsg = msgs[1]?.content || msgs[0]?.content || '';
+      const titleMatch = userMsg.match(/\*\*Title:\*\*\s*(.+)/i) || userMsg.match(/Title:\s*(.+)/i);
+      if (titleMatch) preview = titleMatch[1].substring(0, 80);
+      else preview = (userMsg.split('\n').find(l => l.trim().length > 10) || userMsg).substring(0, 80);
+    }
+
+    return { lineIndex, stepCount, flags, preview };
+  },
+
+  renderTrajList() {
+    const container = document.getElementById('rollout-traj-list');
+    const summaries = this.state.trajSummaries;
+
+    let html = '<div class="tbl-wrap" style="max-height:500px;"><table><thead><tr>';
+    html += '<th>#</th><th>Steps</th><th>Patterns</th><th>Preview</th><th>Action</th>';
+    html += '</tr></thead><tbody>';
+
+    summaries.forEach((s, i) => {
+      const badges = [];
+      this.PATTERNS.forEach(p => {
+        if (s.flags[p.key]) badges.push(`<span class="badge" style="background:${p.color}22;color:${p.color};font-size:9px;padding:1px 5px;">${p.label.split(' ').map(w=>w[0]).join('').toUpperCase()}</span>`);
+      });
+      html += `<tr class="clickable" onclick="RolloutMonitor.inspectTrajectory(${i})">`;
+      html += `<td>${s.lineIndex}</td><td>${s.stepCount}</td>`;
+      html += `<td style="display:flex;gap:3px;flex-wrap:wrap;">${badges.join(' ') || '<span style="color:var(--green);font-size:11px;">clean</span>'}</td>`;
+      html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text-dim);">${this.esc(s.preview)}</td>`;
+      html += `<td><button class="load-btn sec" style="font-size:11px;padding:3px 10px;" onclick="event.stopPropagation();RolloutMonitor.inspectTrajectory(${i})">Inspect</button></td>`;
+      html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+  },
+
+  async inspectTrajectory(summaryIndex) {
+    const summary = this.state.trajSummaries[summaryIndex];
+    if (!summary) return;
+    const stepNum = this.state.currentStep;
+    const file = this.state.files.get(stepNum);
+    if (!file) return;
+
+    this.state.currentTrajIndex = summaryIndex;
+    const status = document.getElementById('rollout-load-status');
+    status.textContent = `Loading trajectory ${summary.lineIndex} from step ${stepNum}…`;
+
+    // Read file and parse only the specific line
+    const text = await file.text();
+    const lines = text.trim().split('\n');
+    const targetLine = lines[summary.lineIndex];
+    if (!targetLine) { status.textContent = 'Line not found'; return; }
+
+    let msgs;
+    try {
+      const obj = JSON.parse(targetLine);
+      msgs = Array.isArray(obj) ? obj : (obj.messages || []);
+    } catch (e) { status.textContent = 'Parse error: ' + e.message; return; }
+
+    const steps = DataParser.extractSteps(msgs);
+    const micro = MicroAnalyzer.analyze({ steps });
+    status.textContent = `Step ${stepNum} / Trajectory ${summary.lineIndex} — ${steps.length} steps`;
+
+    // Highlight selected row
+    document.querySelectorAll('#rollout-traj-list tr.clickable').forEach((tr, i) => {
+      tr.style.background = i === summaryIndex ? 'var(--surface2)' : '';
+    });
+
+    this.renderTrajectoryDetail(msgs, steps, micro, summary);
+  },
+
+  renderTrajectoryDetail(msgs, steps, micro, summary) {
+    const container = document.getElementById('rollout-traj-detail');
+
+    // Reuse inspector pattern from Experiment Evaluation
+    let html = '<div class="insp-wrap">';
+
+    // Header
+    html += '<div class="insp-header">';
+    html += `<div class="fld"><div class="flbl">Step</div><div class="fval">${this.state.currentStep}</div></div>`;
+    html += `<div class="fld"><div class="flbl">Trajectory</div><div class="fval">#${summary.lineIndex}</div></div>`;
+    html += `<div class="fld"><div class="flbl">Actions</div><div class="fval">${steps.length}</div></div>`;
+    // Pattern badges
+    const activeBadges = [];
+    this.PATTERNS.forEach(p => {
+      if (summary.flags[p.key]) activeBadges.push(`<span class="badge" style="background:${p.color}22;color:${p.color};">${p.label}</span>`);
+    });
+    if (activeBadges.length) html += `<div class="fld"><div class="flbl">Patterns</div><div>${activeBadges.join(' ')}</div></div>`;
+    html += '</div>';
+
+    // Summary panels
+    html += '<div class="insp-summary" style="grid-template-columns:2fr 1fr 1fr 1fr;">';
+
+    // Action strip
+    html += '<div class="sum-panel"><h4>Action Sequence</h4><div class="action-strip">';
+    steps.forEach((s, i) => {
+      const color = UI.TOOL_COLORS[s.toolName] || UI.TOOL_COLORS.unknown;
+      html += `<div class="action-block" style="background:${color};" title="Step ${i+1}: ${s.toolName}${s.parameters.command ? ':'+s.parameters.command : ''}" onclick="RolloutMonitor.showStep(${i})"></div>`;
+    });
+    html += '</div></div>';
+
+    // Tool breakdown
+    html += '<div class="sum-panel"><h4>Tool Usage</h4>';
+    const tb = micro.toolBreakdown;
+    Object.entries(tb).sort((a,b)=>b[1]-a[1]).forEach(([tool, count]) => {
+      html += `<div style="font-size:11px;"><span style="color:${UI.TOOL_COLORS[tool]||'var(--text-dim)'};">${tool}</span>: ${count}</div>`;
+    });
+    html += '</div>';
+
+    // Files
+    html += '<div class="sum-panel"><h4>Files Touched</h4><ul class="files-list">';
+    micro.files.forEach(f => { html += `<li title="${this.esc(f)}">${this.esc(f.split('/').slice(-2).join('/'))}</li>`; });
+    if (!micro.files.length) html += '<li style="color:var(--text-dim);">(none)</li>';
+    html += '</ul></div>';
+
+    // Error timeline
+    html += '<div class="sum-panel"><h4>Error Timeline</h4>';
+    html += CR.sparkline(micro.errorTimeline, { color: '#f87171' });
+    html += '</div>';
+
+    html += '</div>';
+
+    // Step list + detail (body)
+    html += '<div class="insp-body">';
+
+    // Step list
+    html += '<div class="step-list" id="rollout-step-list">';
+    steps.forEach((s, i) => {
+      const status = s.hasError ? 's-error' : s.isTruncated ? 's-warning' : 's-success';
+      const filePath = s.parameters.path || s.parameters.file || '';
+      const fileShort = filePath ? filePath.split('/').slice(-1)[0] : '';
+      const toolDisplay = s.toolName + (s.parameters.command ? ':' + s.parameters.command : '');
+
+      // Extra flags
+      const content = '';
+      let icons = '';
+      const isTextOnly = s.toolName === 'unknown';
+      if (isTextOnly) icons += '<span style="color:var(--orange);" title="Text only">TXT</span> ';
+      if (s.hasError) icons += '<span style="color:var(--red);">E</span>';
+      else if (s.isTruncated) icons += '<span style="color:var(--yellow);">T</span>';
+      else if (!isTextOnly) icons += '<span style="color:var(--green);">OK</span>';
+
+      html += `<div class="step-row ${status}" data-si="${i}" onclick="RolloutMonitor.showStep(${i})">`;
+      html += `<span class="step-num">${i+1}</span>`;
+      html += `<span class="step-tool-badge tc-${s.toolName}">${this.esc(toolDisplay.length > 24 ? toolDisplay.substring(0,23)+'…' : toolDisplay)}</span>`;
+      html += `<span class="step-file">${this.esc(fileShort)}</span>`;
+      html += `<span class="step-icons">${icons}</span>`;
+      html += '</div>';
+    });
+    html += '</div>';
+
+    // Step detail placeholder
+    html += '<div class="step-detail" id="rollout-step-detail"><div class="step-detail-empty">Click a step to view details</div></div>';
+
+    html += '</div></div>';
+
+    container.innerHTML = html;
+
+    // Store steps for detail rendering
+    this._currentSteps = steps;
+  },
+
+  showStep(si) {
+    const steps = this._currentSteps;
+    if (!steps || !steps[si]) return;
+    const step = steps[si];
+
+    // Highlight
+    document.querySelectorAll('#rollout-step-list .step-row').forEach(el => el.classList.remove('selected'));
+    document.querySelector(`#rollout-step-list .step-row[data-si="${si}"]`)?.classList.add('selected');
+
+    const panel = document.getElementById('rollout-step-detail');
+    const toolDisplay = step.toolName + (step.parameters.command ? ':' + step.parameters.command : '');
+
+    let html = '<div class="step-detail-content">';
+
+    // Header
+    html += '<div class="sd-header">';
+    html += `<strong>Step ${si + 1}</strong>`;
+    html += `<span class="step-tool-badge tc-${step.toolName}" style="font-size:12px;">${this.esc(toolDisplay)}</span>`;
+    if (step.parameters.path) html += `<span class="badge bb" style="font-size:11px;">${this.esc(step.parameters.path.split('/').slice(-2).join('/'))}</span>`;
+    if (step.hasError) html += '<span class="badge br">Error</span>';
+    if (step.isTruncated) html += '<span class="badge by">Truncated</span>';
+    if (step.toolName === 'unknown') html += '<span class="badge by">Text Only</span>';
+
+    // Check unclosed think
+    const rawContent = step.thought + (step.rawAction || '');
+    html += '</div>';
+
+    // Think
+    const modeLabel = step.thinkMode === 'formatted' ? ' <span style="color:var(--accent);font-size:10px;text-transform:none;letter-spacing:0;">(formatted)</span>'
+                     : step.thinkMode === 'free' ? ' <span style="color:var(--orange);font-size:10px;text-transform:none;letter-spacing:0;">(free)</span>' : '';
+    const thinkCollapsed = step.thought ? '' : ' collapsed';
+    html += `<div class="sd-section${thinkCollapsed}">`;
+    html += `<div class="sd-section-title${thinkCollapsed}" onclick="this.classList.toggle('collapsed');this.parentElement.classList.toggle('collapsed');">Think${modeLabel}</div>`;
+    html += `<div class="sd-section-body think-body">${this.esc(step.thought || '(empty)')}</div></div>`;
+
+    // Action
+    html += '<div class="sd-section">';
+    html += '<div class="sd-section-title" onclick="this.classList.toggle(\'collapsed\');this.parentElement.classList.toggle(\'collapsed\');">Action</div>';
+    html += `<div class="sd-section-body">${this.highlightXml(step.rawAction || '(no action detected)')}</div>`;
+
+    // Inline diff for str_replace
+    if (step.parameters.command === 'str_replace' && step.parameters.old_str != null) {
+      const oldStr = step.parameters.old_str || '';
+      const newStr = step.parameters.new_str || '';
+      html += '<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">';
+      html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Diff preview:</div>';
+      html += `<div style="padding:6px;border-radius:4px;white-space:pre-wrap;font-size:11px;background:rgba(248,113,113,.1);color:var(--red);margin-bottom:4px;max-height:200px;overflow:auto;">${this.esc(oldStr)}</div>`;
+      html += `<div style="padding:6px;border-radius:4px;white-space:pre-wrap;font-size:11px;background:rgba(74,222,128,.1);color:var(--green);max-height:200px;overflow:auto;">${this.esc(newStr)}</div>`;
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // Observation
+    const obs = step.observation.length > 3000 ? step.observation.substring(0, 3000) + '\n… (truncated for display)' : step.observation;
+    html += '<div class="sd-section">';
+    html += '<div class="sd-section-title" onclick="this.classList.toggle(\'collapsed\');this.parentElement.classList.toggle(\'collapsed\');">Observation</div>';
+    html += `<div class="sd-section-body">${this.esc(obs || '(empty)')}</div></div>`;
+
+    html += '</div>';
+    panel.innerHTML = html;
+  },
+
+  backToDashboard() {
+    document.getElementById('rollout-inspector').style.display = 'none';
+    document.getElementById('rollout-dashboard').style.display = '';
+    document.getElementById('rollout-traj-detail').innerHTML = '';
+    this.state.currentStep = null;
+    this.state.trajSummaries = [];
+    this.state.currentTrajIndex = null;
+  },
+
+  esc(s) {
+    if (!s) return '';
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  },
+
+  highlightXml(text) {
+    return this.esc(text)
+      .replace(/&lt;function=(\w+)&gt;/g, '&lt;function=<strong style="color:var(--accent);">$1</strong>&gt;')
+      .replace(/&lt;parameter=(\w+)&gt;/g, '&lt;parameter=<strong style="color:var(--yellow);">$1</strong>&gt;')
+      .replace(/&lt;\/function&gt;/g, '&lt;<span style="color:var(--accent);">/function</span>&gt;')
+      .replace(/&lt;\/parameter&gt;/g, '&lt;<span style="color:var(--yellow);">/parameter</span>&gt;');
   },
 };
 

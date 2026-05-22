@@ -43,7 +43,7 @@ input, select { font-family:inherit; font-size:13px; background:var(--surface2);
 .load-status { font-size:11px; color:var(--accent); }
 
 /* Main layout */
-.main { display:flex; flex:1; overflow:hidden; }
+.main { display:flex; flex:1; overflow:hidden; min-height:0; }
 
 /* Left: trajectory list */
 .traj-list { width:320px; border-right:1px solid var(--border); overflow-y:auto; flex-shrink:0; background:var(--surface); }
@@ -54,13 +54,14 @@ input, select { font-family:inherit; font-size:13px; background:var(--surface2);
 .traj-item.selected .traj-idx { color:rgba(255,255,255,.7); }
 .traj-item .traj-info { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-/* Right: inspector */
-.inspector { flex:1; display:flex; flex-direction:column; overflow:hidden; }
-.inspector-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-dim); font-size:14px; }
+/* Right: inspector — uses position:relative so children can use absolute positioning */
+.inspector { flex:1; position:relative; overflow:hidden; }
+.inspector-empty { display:flex; align-items:center; justify-content:center; position:absolute; inset:0; color:var(--text-dim); font-size:14px; }
 
-/* Step list + detail */
-.insp-body { display:flex; flex:1; overflow:hidden; }
-.step-list { width:320px; border-right:1px solid var(--border); overflow-y:auto; flex-shrink:0; background:var(--surface); }
+/* Step list — absolute left column, full height, scrollable */
+.step-list { position:absolute; top:0; bottom:0; left:0; width:320px; border-right:1px solid var(--border); overflow-y:auto; background:var(--surface); }
+/* Step detail — absolute right column, full height, scrollable */
+.step-detail { position:absolute; top:0; bottom:0; left:320px; right:0; overflow-y:auto; padding:16px; }
 .step-row { padding:6px 10px; border-bottom:1px solid var(--border); cursor:pointer; display:flex; align-items:center; gap:6px; font-size:12px; border-left:3px solid transparent; transition:background .1s; }
 .step-row:hover { background:var(--surface2); }
 .step-row.selected { background:var(--surface2); border-left-color:var(--accent); }
@@ -83,7 +84,6 @@ input, select { font-family:inherit; font-size:13px; background:var(--surface2);
 .bb { background:rgba(108,140,255,.15); color:var(--accent); }
 
 /* Detail panel */
-.step-detail { flex:1; overflow-y:auto; padding:16px; }
 .step-detail-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-dim); }
 
 .sd-header { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; padding-bottom:10px; border-bottom:1px solid var(--border); }
@@ -137,13 +137,9 @@ input, select { font-family:inherit; font-size:13px; background:var(--surface2);
     </div>
     <div class="inspector">
       <div class="inspector-empty" id="inspector-placeholder">Load a .jsonl file to begin</div>
-      <div id="inspector-content" style="display:none;flex-direction:column;">
-        <div class="insp-body">
-          <div class="step-list" id="step-list"></div>
-          <div class="step-detail" id="step-detail">
-            <div class="step-detail-empty">Click a step to view details</div>
-          </div>
-        </div>
+      <div class="step-list" id="step-list" style="display:none;"></div>
+      <div class="step-detail" id="step-detail" style="display:none;">
+        <div class="step-detail-empty">Click a step to view details</div>
       </div>
     </div>
   </div>
@@ -172,10 +168,15 @@ const App = {
     for (let i = 0; i < lines.length; i++) {
       try {
         const obj = JSON.parse(lines[i]);
-        const msgs = obj.messages || [];
+        // Support both {messages: [...]} and bare [...] formats
+        const msgs = Array.isArray(obj) ? obj : (obj.messages || []);
         const steps = this.extractSteps(msgs);
         const preview = this.getPreview(msgs);
-        this.trajectories.push({ index: i, messages: msgs, steps, preview });
+        // Detect bad patterns at instance level
+        const badPatterns = [];
+        if (steps.some(s => s.unclosedThink)) badPatterns.push('unclosed-think');
+        if (steps.some(s => s.toolName === 'text')) badPatterns.push('txt');
+        this.trajectories.push({ index: i, messages: msgs, steps, preview, badPatterns });
       } catch(e) { console.warn(`Line ${i}:`, e); }
     }
     document.getElementById('load-status').textContent = `${this.trajectories.length} trajectories loaded`;
@@ -204,11 +205,13 @@ const App = {
       const content = assistantMsg.content || '';
       const action = this.extractFunctionCall(content);
       const { thought, thinkMode } = this.extractThink(content, action.raw);
+      const unclosedThink = (content.includes('<think>') && !content.includes('</think>'));
       const observation = userObs?.content || '';
       steps.push({
         index: steps.length,
         thought,
         thinkMode,
+        unclosedThink,
         toolName: action.toolName,
         toolDisplay: action.toolDisplay,
         parameters: action.parameters,
@@ -282,12 +285,15 @@ const App = {
 
   renderTrajList() {
     const container = document.getElementById('traj-list-items');
-    container.innerHTML = this.filtered.map((t, fi) =>
-      `<div class="traj-item" data-fi="${fi}" onclick="App.selectTraj(${fi})">
-        <div class="traj-idx">#${t.index} &middot; ${t.steps.length} steps</div>
+    container.innerHTML = this.filtered.map((t, fi) => {
+      let badges = '';
+      if (t.badPatterns.includes('unclosed-think')) badges += '<span class="badge br" style="font-size:9px;padding:1px 5px;">unclosed-think</span> ';
+      if (t.badPatterns.includes('txt')) badges += '<span class="badge by" style="font-size:9px;padding:1px 5px;">txt</span> ';
+      return `<div class="traj-item" data-fi="${fi}" onclick="App.selectTraj(${fi})">
+        <div class="traj-idx">#${t.index} &middot; ${t.steps.length} steps ${badges}</div>
         <div class="traj-info">${this.esc(t.preview)}</div>
-      </div>`
-    ).join('');
+      </div>`;
+    }).join('');
   },
 
   selectTraj(fi) {
@@ -301,8 +307,8 @@ const App = {
     document.querySelector(`.traj-item[data-fi="${fi}"]`)?.classList.add('selected');
 
     document.getElementById('inspector-placeholder').style.display = 'none';
-    const ic = document.getElementById('inspector-content');
-    ic.style.display = 'flex';
+    document.getElementById('step-list').style.display = '';
+    document.getElementById('step-detail').style.display = '';
 
     const sl = document.getElementById('step-list');
     sl.innerHTML = this.steps.map((s, i) => {
@@ -310,6 +316,8 @@ const App = {
       const filePath = s.parameters.path || s.parameters.file || '';
       const fileShort = filePath ? filePath.split('/').slice(-1)[0] : '';
       let icons = '';
+      if (s.unclosedThink) icons += '<span style="color:var(--red);font-size:9px;font-weight:600;">UNCLOSED</span> ';
+      if (s.toolName === 'text') icons += '<span style="color:var(--yellow);font-size:9px;font-weight:600;">TXT</span> ';
       if (s.hasError) icons += '<span style="color:var(--red);">E</span>';
       else if (s.isTruncated) icons += '<span style="color:var(--yellow);">T</span>';
       else icons += '<span style="color:var(--green);">OK</span>';
@@ -342,6 +350,8 @@ const App = {
     if (step.parameters.path) html += `<span class="badge bb" style="font-size:11px;">${this.esc(step.parameters.path.split('/').slice(-2).join('/'))}</span>`;
     if (step.hasError) html += '<span class="badge br">Error</span>';
     if (step.isTruncated) html += '<span class="badge by">Truncated</span>';
+    if (step.unclosedThink) html += '<span class="badge br">Unclosed &lt;think&gt;</span>';
+    if (step.toolName === 'text') html += '<span class="badge by">TXT (no tool call)</span>';
     html += '</div>';
 
     // Think
