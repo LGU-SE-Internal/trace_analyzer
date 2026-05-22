@@ -34,6 +34,7 @@ fi
 # It is important to set all env_var in all workers/nodes.
 export ARL_GATEWAY_URL="http://118.145.210.10:8080"
 export ARL_MIRROR_NAMESPACE="code"
+export ARL_MIRROR_REGISTRY="pair-diag-cn-guangzhou.cr.volces.com"
 
 # BYTED: set proxy for connections to internet
 if [ "$use_byted_venv" = true ]; then
@@ -60,4 +61,4 @@ if [ "$use_byted_venv" = true ]; then
     uv pip install bytedray[default,data,serve,bytedance]==2.10.0.34 byted-wandb --index-url https://bytedpypi.byted.org/simple/
     uv pip install "fastapi>=0.107.0,<0.113.0" # strange bug: bytedray, vllm, fastapi are not compatible
 fi
-uv pip install "setuptools>=64,<70"
+uv pip install cachetools "setuptools>=64,<70"

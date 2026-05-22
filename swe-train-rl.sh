@@ -49,10 +49,12 @@ P2A_M_MAX="${P2A_M_MAX:-3.0}"
 P2A_BONUS_MAP_DIR="${P2A_BONUS_MAP_DIR:-}"
 P2A_TRACKING_MODE="${P2A_TRACKING_MODE:-view_only}"  # view_only | view_and_bash
 MAX_STEPS="${MAX_STEPS:-25}"
-OVERLONG_FILTER="${OVERLONG_FILTER:-false}"
+OVERLONG_FILTER="${OVERLONG_FILTER:-true}"
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-32768}"
 MODEL_PATH_OVERRIDE="${MODEL_PATH_OVERRIDE:-}"
 AGG_MODE="${AGG_MODE:-seq-mean-token-sum-norm}"
+TOKEN_IN_TOKEN_OUT="${TOKEN_IN_TOKEN_OUT:-true}"
+VAL_HARD_ONLY="${VAL_HARD_ONLY:-true}"  # true: validate on hard subset only
 
 # Resolve model path
 if [ -n "$MODEL_PATH_OVERRIDE" ]; then
@@ -94,11 +96,18 @@ if [ "$P2A_ENABLE" = "true" ]; then
     echo "P2A enabled with overrides: $P2A_OVERRIDES"
 fi
 
+# ============ Validation dataset ============
+if [ "$VAL_HARD_ONLY" = "true" ]; then
+    VAL_FILES="data/swe/SWE_Bench_Verified_Hard.parquet"
+else
+    VAL_FILES="data/swe/SWE_Bench_Verified.parquet"
+fi
+
 # ============ Run Training ============
 python3 -m rllm.trainer.verl.train_agent_ppo \
     algorithm.adv_estimator=$ADV_ESTIMATOR \
     data.train_files=data/swe/R2E_Gym_Subset.parquet \
-    data.val_files=data/swe/SWE_Bench_Verified.parquet \
+    data.val_files=$VAL_FILES \
     trainer.default_local_dir=$ROOT_DIR/experiments/verl/$EXPERIMENT_NAME \
     trainer.rollout_data_dir=$ROOT_DIR/rollouts/$EXPERIMENT_NAME \
     data.train_batch_size=$((BS_PER_NODE * NNODES)) \
@@ -156,7 +165,8 @@ python3 -m rllm.trainer.verl.train_agent_ppo \
     rllm.agent.name=sweagent \
     rllm.agent.max_steps=$MAX_STEPS \
     rllm.agent.overlong_filter=$OVERLONG_FILTER \
-    rllm.agent.trajectory_timeout=300 \
+    rllm.token_in_token_out=$TOKEN_IN_TOKEN_OUT \
+    rllm.agent.trajectory_timeout=1200 \
     +rllm.env.env_args.verbose=false \
     +rllm.env.env_args.scaffold=r2egym \
     +rllm.agent.agent_args.scaffold=r2egym \
