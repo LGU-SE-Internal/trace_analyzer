@@ -105,6 +105,36 @@ class VerlEngine(RolloutEngine):
             finish_reason=finish_reason,
         )
 
+    async def generate_from_token_ids(self, prompt_ids: list[int], application_id: str | None = None, validate: bool = False, **kwargs) -> TokenOutput:
+        """Token-in-token-out: generate completion from raw token IDs without decode/re-encode.
+
+        Args:
+            prompt_ids: Complete prompt as token IDs (already accumulated across turns).
+            application_id: Request tracing ID.
+            validate: Use validation sampling params if True.
+            **kwargs: Override sampling params (e.g. max_tokens).
+
+        Returns:
+            TokenOutput with token_ids and log_probs from the inference engine.
+        """
+        if application_id is None:
+            application_id = str(uuid.uuid4())
+
+        sampling_params = self.val_sampling_params.copy() if self.validate or validate else self.train_sampling_params.copy()
+        sampling_params.update(kwargs)
+        # Pop max_tokens/max_new_tokens — SGLang SamplingParams doesn't accept them.
+        # The caller is responsible for truncation after generation.
+        sampling_params.pop("max_tokens", None)
+        sampling_params.pop("max_new_tokens", None)
+
+        token_output: TokenOutput = await self.server_manager.generate(
+            request_id=application_id,
+            prompt_ids=prompt_ids,
+            image_data=None,
+            sampling_params=sampling_params,
+        )
+        return token_output
+
     async def wake_up(self):
         """Wake up all rollout replica instances asynchronously."""
         await asyncio.gather(*[replica.wake_up() for replica in self.rollout_manager.rollout_replicas])

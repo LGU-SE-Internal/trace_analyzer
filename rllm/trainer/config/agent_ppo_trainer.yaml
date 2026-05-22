@@ -44,6 +44,7 @@ rllm:
     retry_limit: 3
   disable_thinking: False
   accumulate_reasoning: False
+  token_in_token_out: False  # Use token-level accumulation instead of re-encoding
   mask_truncated_samples: False
   filter_token_mismatch: True
   stepwise_advantage:
