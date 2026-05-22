@@ -592,6 +592,45 @@ def instrument_source(source: str, callables: list[dict]) -> str:
 
     lines = source.splitlines(keepends=True)
 
+    try:
+        with _ast_lock:
+            tree = ast.parse(source)
+    except SyntaxError:
+        logger.warning("SyntaxError while parsing source for instrumentation")
+        return source
+
+    nodes_by_key: dict[tuple[int, str], ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    nodes_by_line: dict[int, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+
+    def _visit(node: ast.AST, class_name: str | None = None) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                _visit(child, class_name=child.name)
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qualified = (
+                    f"{class_name}.{child.name}" if class_name else child.name
+                )
+                nodes_by_key[(child.lineno, qualified)] = child
+                nodes_by_key[(child.lineno, child.name)] = child
+                nodes_by_line.setdefault(child.lineno, []).append(child)
+                _visit(child, class_name=class_name)
+
+    def _is_docstring_stmt(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        )
+
+    def _line_ending(line: str) -> str:
+        if line.endswith("\r\n"):
+            return "\r\n"
+        if line.endswith("\n"):
+            return "\n"
+        return ""
+
+    _visit(tree)
+
     # Sort by start_line descending so insertions don't shift earlier lines
     sorted_callables = sorted(callables, key=lambda c: c["start_line"], reverse=True)
 
@@ -605,71 +644,54 @@ def instrument_source(source: str, callables: list[dict]) -> str:
         if func_line_idx >= len(lines):
             continue
 
-        # Find insertion point: after the full def signature (which may span
-        # multiple lines via parentheses or backslash continuation).
-        # We scan from the def line forward until we find the closing '):' that
-        # terminates the signature.
-        insert_idx = func_line_idx  # start AT the def line
+        key = (c["start_line"], c.get("qualified_name") or c.get("name", ""))
+        func_node = nodes_by_key.get(key)
+        if func_node is None:
+            line_matches = nodes_by_line.get(c["start_line"], [])
+            if len(line_matches) != 1:
+                continue
+            func_node = line_matches[0]
+        if not func_node.body:
+            continue
 
-        paren_depth = 0
-        found_colon = False
-        while insert_idx < len(lines):
-            line_text = lines[insert_idx]
-            for ch in line_text:
-                if ch == '(':
-                    paren_depth += 1
-                elif ch == ')':
-                    paren_depth -= 1
-                elif ch == '#':
-                    break  # rest of line is comment
-                elif ch == ':' and paren_depth <= 0:
-                    found_colon = True
-                    break
-            insert_idx += 1
-            if found_colon:
-                break
-            # Also handle backslash continuation when no parens are open
-            if paren_depth <= 0:
-                stripped = line_text.rstrip()
-                if not stripped.endswith("\\"):
-                    break  # no continuation → something unexpected, bail
+        first_stmt = func_node.body[0]
+        def_line = lines[func_line_idx]
+        def_indent = def_line[: len(def_line) - len(def_line.lstrip())]
+        body_indent = def_indent + "    "
+        insert_idx = first_stmt.lineno - 1
 
-        # Check if next non-empty line is a docstring
-        check_idx = insert_idx
-        while check_idx < len(lines) and lines[check_idx].strip() == "":
-            check_idx += 1
+        if first_stmt.lineno == func_node.lineno:
+            line = lines[func_line_idx]
+            ending = _line_ending(line)
+            rewritten_ending = ending or "\n"
+            line_without_ending = line[: -len(ending)] if ending else line
+            header = line_without_ending[: first_stmt.col_offset].rstrip()
+            body_text = line_without_ending[first_stmt.col_offset :].lstrip()
+            lines[func_line_idx] = f"{header}{rewritten_ending}"
+            insert_idx = func_line_idx + 1
 
-        if check_idx < len(lines):
-            stripped_line = lines[check_idx].strip()
-            if stripped_line.startswith(('"""', "'''", 'r"""', "r'''")):
-                # Find end of docstring
-                quote = '"""' if '"""' in stripped_line else "'''"
-                if stripped_line.count(quote) >= 2:
-                    # Single-line docstring
-                    insert_idx = check_idx + 1
-                else:
-                    # Multi-line docstring: find closing quote
-                    doc_idx = check_idx + 1
-                    while doc_idx < len(lines):
-                        if quote in lines[doc_idx]:
-                            insert_idx = doc_idx + 1
-                            break
-                        doc_idx += 1
-                    else:
-                        insert_idx = check_idx + 1
+            if _is_docstring_stmt(first_stmt):
+                doc_end_col = first_stmt.end_col_offset or first_stmt.col_offset
+                doc_text = line_without_ending[
+                    first_stmt.col_offset : doc_end_col
+                ].lstrip()
+                remainder = line_without_ending[doc_end_col:].lstrip()
+                if remainder.startswith(";"):
+                    remainder = remainder[1:].lstrip()
+                lines.insert(insert_idx, f"{body_indent}{doc_text}{rewritten_ending}")
+                insert_idx += 1
+                if remainder:
+                    lines.insert(insert_idx, f"{body_indent}{remainder}{rewritten_ending}")
+            else:
+                lines.insert(insert_idx, f"{body_indent}{body_text}{ending}")
+        else:
+            body_line_idx = first_stmt.lineno - 1
+            if body_line_idx < len(lines):
+                body_line = lines[body_line_idx]
+                body_indent = body_line[: first_stmt.col_offset]
 
-        # Determine indentation from the function body
-        body_indent = ""
-        for scan_idx in range(insert_idx, min(insert_idx + 5, len(lines))):
-            candidate = lines[scan_idx]
-            if candidate.strip():
-                body_indent = candidate[: len(candidate) - len(candidate.lstrip())]
-                break
-        if not body_indent:
-            # Fallback: use def line indent + 4 spaces
-            def_line = lines[func_line_idx]
-            def_indent = def_line[: len(def_line) - len(def_line.lstrip())]
-            body_indent = def_indent + "    "
+            if _is_docstring_stmt(first_stmt):
+                insert_idx = first_stmt.end_lineno or first_stmt.lineno
 
         # Check if already instrumented
         if insert_idx < len(lines) and "_swe_fault_tracer" in lines[insert_idx]:
