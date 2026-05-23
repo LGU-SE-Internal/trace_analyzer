@@ -502,15 +502,19 @@ def generate_tracer_module(repo_path: str, alt_path: str = "") -> str:
 
         def trace(callable_name, file_path, def_lineno):
             try:
+                # INVARIANT: frame list is OUTER -> INNER. frames[0] is the outermost caller (test entry).
+                # frames[-1] is the innermost callee (the instrumented patched callable). build_call_graph_from_traces depends on this.
                 frames = []
                 frame = sys._getframe(1)
                 while frame is not None:
                     frames.append(frame)
                     frame = frame.f_back
+                frames.reverse()
 
                 repo_frames = [
                     f for f in frames
                     if any(f.f_code.co_filename.startswith(p) for p in _PATH_PREFIXES)
+                    and f.f_code.co_name != "<module>"
                     and "/.venv/" not in f.f_code.co_filename
                     and "/site-packages/" not in f.f_code.co_filename
                 ]
@@ -1376,6 +1380,7 @@ def build_call_graph_from_traces(
             - patched_callables: the input modified_callables
             - traceable: True
     """
+    # PRECONDITION: each trace in `traces` is ordered outer -> inner. See generate_tracer_module.
     # node_key → {file_path, func_name, min_hop_distance, line_no}
     # We use file_path::qualified_name as node key
     node_info: dict[str, dict] = {}
