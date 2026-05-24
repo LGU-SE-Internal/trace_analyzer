@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sandbox Explorer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Top bar ── */
+#topbar {
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+#topbar h1 { font-size: 15px; font-weight: 600; color: #e94560; white-space: nowrap; }
+#status-badge {
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.badge-idle    { background: #333; color: #aaa; }
+.badge-starting{ background: #1a4a1a; color: #6fcf6f; }
+.badge-ready   { background: #1a3a1a; color: #4ade80; }
+.badge-error   { background: #4a1a1a; color: #f87171; }
+.badge-closed  { background: #333; color: #aaa; }
+
+#status-msg { font-size: 11px; color: #888; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+#gateway-input {
+  font-size: 12px;
+  background: #0d1b2a;
+  border: 1px solid #0f3460;
+  color: #aaa;
+  padding: 3px 8px;
+  border-radius: 4px;
+  width: 240px;
+}
+
+/* ── Main layout ── */
+#main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Left panel: instance browser ── */
+#left {
+  width: 300px;
+  min-width: 220px;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #0f3460;
+  background: #16213e;
+  flex-shrink: 0;
+}
+
+#left-header {
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid #0f3460;
+  flex-shrink: 0;
+}
+
+#dataset-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.tab-btn {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.tab-btn.active { background: #0f3460; color: #e0e0e0; border-color: #1a5276; }
+.tab-btn:hover:not(.active) { border-color: #1a4a6e; color: #bbb; }
+
+#search-box {
+  width: 100%;
+  background: #0d1b2a;
+  border: 1px solid #0f3460;
+  color: #e0e0e0;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  outline: none;
+}
+#search-box:focus { border-color: #1a6ea8; }
+#instance-count { font-size: 10px; color: #666; margin-top: 4px; }
+
+#instance-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+#instance-list::-webkit-scrollbar { width: 5px; }
+#instance-list::-webkit-scrollbar-track { background: #16213e; }
+#instance-list::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+
+.instance-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: all 0.1s;
+}
+.instance-item:hover { background: #1a2a4e; }
+.instance-item.selected { background: #1a2a4e; border-left-color: #e94560; }
+.instance-item .iid { font-size: 12px; font-weight: 500; color: #b3c6e0; word-break: break-all; }
+.instance-item .imeta { font-size: 10px; color: #556; margin-top: 2px; }
+
+#left-actions {
+  padding: 10px 12px;
+  border-top: 1px solid #0f3460;
+  flex-shrink: 0;
+}
+.action-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.action-row:last-child { margin-bottom: 0; }
+
+#exp-id-input {
+  flex: 1;
+  font-size: 11px;
+  background: #0d1b2a;
+  border: 1px solid #0f3460;
+  color: #aaa;
+  padding: 4px 7px;
+  border-radius: 4px;
+}
+
+.btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-start  { background: #1a5c2a; color: #4ade80; flex: 1; }
+.btn-start:hover:not(:disabled)  { background: #22752f; }
+.btn-stop   { background: #5c1a1a; color: #f87171; flex: 1; }
+.btn-stop:hover:not(:disabled)   { background: #7a2020; }
+.btn-clear  { background: #2a2a2a; color: #888; }
+.btn-clear:hover:not(:disabled)  { background: #3a3a3a; color: #aaa; }
+
+/* ── Right panel: terminal ── */
+#right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #0d1117;
+}
+
+#terminal {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 0;
+}
+#terminal::-webkit-scrollbar { width: 6px; }
+#terminal::-webkit-scrollbar-track { background: #0d1117; }
+#terminal::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+
+.log-system { color: #7d8590; }
+.log-system.prompt { color: #58a6ff; font-weight: 600; }
+.log-stdout { color: #e6edf3; }
+.log-stderr { color: #f0883e; }
+.log-error  { color: #f85149; }
+.log-spinner { color: #bc8cff; }
+
+/* spinner */
+@keyframes spin { to { content: "⣾"; } }
+.spinner::after { content: "⠋"; animation: spin-frames 0.7s steps(8) infinite; }
+@keyframes spin-frames {
+  0%   { content: "⠋"; }
+  12%  { content: "⠙"; }
+  25%  { content: "⠹"; }
+  37%  { content: "⠸"; }
+  50%  { content: "⠼"; }
+  62%  { content: "⠴"; }
+  75%  { content: "⠦"; }
+  87%  { content: "⠧"; }
+  100% { content: "⠇"; }
+}
+
+/* ── Input bar ── */
+#input-bar {
+  border-top: 1px solid #21262d;
+  background: #161b22;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+#prompt-label { color: #58a6ff; font-family: monospace; font-size: 13px; white-space: nowrap; }
+
+#cmd-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e6edf3;
+  font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+  font-size: 13px;
+  caret-color: #58a6ff;
+}
+#cmd-input::placeholder { color: #30363d; }
+#cmd-input:disabled { opacity: 0.4; }
+
+#timeout-input {
+  width: 56px;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  color: #7d8590;
+  border-radius: 3px;
+  padding: 3px 5px;
+  font-size: 11px;
+  text-align: center;
+}
+#timeout-label { font-size: 10px; color: #444; white-space: nowrap; }
+
+.btn-exec {
+  background: #1f3e5c;
+  color: #58a6ff;
+  border: 1px solid #1f6feb;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+.btn-exec:hover:not(:disabled) { background: #2a5278; }
+
+/* resize handle */
+#resize-handle {
+  width: 4px;
+  background: #0f3460;
+  cursor: col-resize;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+#resize-handle:hover { background: #1a6ea8; }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div id="topbar">
+  <h1>🔬 Sandbox Explorer</h1>
+  <span id="status-badge" class="badge-idle">IDLE</span>
+  <span id="status-msg">Select an instance and press Start</span>
+  <label style="font-size:11px;color:#666;white-space:nowrap">Gateway:</label>
+  <input id="gateway-input" type="text" value="http://118.145.210.10:8080" placeholder="ARL gateway URL">
+</div>
+
+<!-- Main -->
+<div id="main">
+
+  <!-- Left panel -->
+  <div id="left">
+    <div id="left-header">
+      <div id="dataset-tabs">
+        <button class="tab-btn active" onclick="switchDataset('r2egym')">R2E-Gym</button>
+        <button class="tab-btn" onclick="switchDataset('swebench')">SWE-Bench</button>
+      </div>
+      <input id="search-box" type="text" placeholder="Search instances..." oninput="onSearch(this.value)">
+      <div id="instance-count" style="color:#666">Loading...</div>
+    </div>
+
+    <div id="instance-list">
+      <div style="padding:16px;color:#555;font-size:12px">Loading instances...</div>
+    </div>
+
+    <div id="left-actions">
+      <div class="action-row">
+        <span style="font-size:11px;color:#666;line-height:28px">Exp ID:</span>
+        <input id="exp-id-input" type="text" value="sandbox-explorer" placeholder="ARL experiment ID">
+      </div>
+      <div class="action-row">
+        <button class="btn btn-start" id="btn-start" onclick="startSession()" disabled>▶ Start</button>
+        <button class="btn btn-stop"  id="btn-stop"  onclick="stopSession()"  disabled>■ Stop</button>
+        <button class="btn btn-clear" onclick="clearTerminal()">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resize handle -->
+  <div id="resize-handle"></div>
+
+  <!-- Right panel: terminal -->
+  <div id="right">
+    <div id="terminal">
+      <div class="log-system">
+        Welcome to Sandbox Explorer.<br>
+        1. Select a dataset tab (R2E-Gym or SWE-Bench Verified)<br>
+        2. Click an instance from the list<br>
+        3. Press <strong style="color:#58a6ff">▶ Start</strong> to launch its ARL sandbox<br>
+        4. Type commands below once the sandbox is ready<br>
+      </div>
+    </div>
+
+    <div id="input-bar">
+      <span id="prompt-label">$</span>
+      <input id="cmd-input" type="text" placeholder="Type a command... (Enter to run)"
+             disabled autocomplete="off" spellcheck="false"
+             onkeydown="onCmdKeydown(event)">
+      <span id="timeout-label">timeout(s):</span>
+      <input id="timeout-input" type="number" value="60" min="5" max="600">
+      <button class="btn btn-exec" id="btn-exec" onclick="execCmd()" disabled>Run</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ─── State ───────────────────────────────────────────────────────────────────
+
+let currentDataset = 'r2egym';
+let selectedInstance = null;
+let allInstances = [];
+let sessionStatus = 'idle';
+let pollTimer = null;
+let lastLogTs = 0;
+let cmdHistory = [];
+let historyIdx = -1;
+let isRunning = false;   // command in flight
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadInstances();
+  startPolling();
+  setupResize();
+});
+
+// ─── Dataset / Search ────────────────────────────────────────────────────────
+
+function switchDataset(ds) {
+  currentDataset = ds;
+  selectedInstance = null;
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    b.classList.toggle('active', (i === 0) === (ds === 'r2egym'));
+  });
+  loadInstances();
+}
+
+async function loadInstances() {
+  document.getElementById('instance-count').textContent = 'Loading...';
+  document.getElementById('instance-list').innerHTML =
+    '<div style="padding:16px;color:#555;font-size:12px">Loading...</div>';
+
+  try {
+    const q = document.getElementById('search-box').value;
+    const res = await fetch(`/api/instances?dataset=${currentDataset}&q=${encodeURIComponent(q)}`);
+    allInstances = await res.json();
+    renderInstances(allInstances);
+  } catch (e) {
+    document.getElementById('instance-list').innerHTML =
+      `<div style="padding:16px;color:#f85149;font-size:12px">Error: ${e.message}</div>`;
+  }
+}
+
+function onSearch(q) {
+  clearTimeout(window._searchTimer);
+  window._searchTimer = setTimeout(loadInstances, 250);
+}
+
+function renderInstances(list) {
+  const el = document.getElementById('instance-list');
+  document.getElementById('instance-count').textContent =
+    `${list.length} instance${list.length !== 1 ? 's' : ''}${list.length === 200 ? ' (capped)' : ''}`;
+
+  if (!list.length) {
+    el.innerHTML = '<div style="padding:16px;color:#555;font-size:12px">No instances found.</div>';
+    return;
+  }
+
+  el.innerHTML = list.map(inst => `
+    <div class="instance-item${inst.instance_id === selectedInstance ? ' selected' : ''}"
+         onclick="selectInstance('${escHtml(inst.instance_id)}')">
+      <div class="iid">${escHtml(inst.instance_id)}</div>
+      <div class="imeta">${escHtml(inst.docker_image.split('/').pop().split(':')[0] || '')}</div>
+    </div>
+  `).join('');
+}
+
+function selectInstance(iid) {
+  selectedInstance = iid;
+  renderInstances(allInstances);
+  // Highlight scroll
+  const items = document.querySelectorAll('.instance-item');
+  items.forEach(el => {
+    if (el.querySelector('.iid').textContent === iid) {
+      el.scrollIntoView({ block: 'nearest' });
+    }
+  });
+  updateButtons();
+}
+
+// ─── Session control ──────────────────────────────────────────────────────────
+
+async function startSession() {
+  if (!selectedInstance) {
+    appendLog('error', 'No instance selected.');
+    return;
+  }
+  if (sessionStatus === 'ready') {
+    appendLog('error', 'Session already running. Stop it first.');
+    return;
+  }
+
+  const gateway = document.getElementById('gateway-input').value.trim();
+  const expId   = document.getElementById('exp-id-input').value.trim() || 'sandbox-explorer';
+
+  try {
+    const res = await fetch('/api/session/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dataset: currentDataset,
+        instance_id: selectedInstance,
+        gateway_url: gateway,
+        experiment_id: expId,
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) appendLog('error', data.error || 'Failed to start session');
+  } catch (e) {
+    appendLog('error', `Start error: ${e.message}`);
+  }
+}
+
+async function stopSession() {
+  try {
+    await fetch('/api/session/stop', { method: 'POST' });
+  } catch (e) {
+    appendLog('error', `Stop error: ${e.message}`);
+  }
+}
+
+async function execCmd() {
+  const input = document.getElementById('cmd-input');
+  const cmd = input.value.trim();
+  if (!cmd || isRunning) return;
+
+  const timeout = parseInt(document.getElementById('timeout-input').value) || 60;
+
+  // History
+  if (cmd && (cmdHistory.length === 0 || cmdHistory[0] !== cmd)) {
+    cmdHistory.unshift(cmd);
+    if (cmdHistory.length > 200) cmdHistory.pop();
+  }
+  historyIdx = -1;
+  input.value = '';
+
+  setRunning(true);
+
+  // Show spinner
+  const spinEl = appendLog('spinner', `$ ${escHtml(cmd)} `);
+  const dot = document.createElement('span');
+  dot.className = 'spinner';
+  spinEl.appendChild(dot);
+
+  try {
+    const res = await fetch('/api/session/exec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd, timeout }),
+    });
+    const data = await res.json();
+
+    // Remove spinner
+    spinEl.remove();
+
+    // Update prompt with new cwd immediately
+    if (data.cwd) {
+      document.getElementById('prompt-label').textContent = `${data.cwd} $`;
+    }
+
+    if (!data.ok) {
+      appendLog('error', `Error: ${data.error}`);
+    }
+    // Actual output comes via polling the log
+  } catch (e) {
+    spinEl.remove();
+    appendLog('error', `Exec error: ${e.message}`);
+  } finally {
+    setRunning(false);
+    input.focus();
+  }
+}
+
+function setRunning(v) {
+  isRunning = v;
+  document.getElementById('cmd-input').disabled = v || sessionStatus !== 'ready';
+  document.getElementById('btn-exec').disabled  = v || sessionStatus !== 'ready';
+}
+
+// ─── Command history ──────────────────────────────────────────────────────────
+
+function onCmdKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    execCmd();
+    return;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (historyIdx < cmdHistory.length - 1) {
+      historyIdx++;
+      document.getElementById('cmd-input').value = cmdHistory[historyIdx];
+    }
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (historyIdx > 0) {
+      historyIdx--;
+      document.getElementById('cmd-input').value = cmdHistory[historyIdx];
+    } else {
+      historyIdx = -1;
+      document.getElementById('cmd-input').value = '';
+    }
+  }
+}
+
+// ─── Polling ──────────────────────────────────────────────────────────────────
+
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(poll, 800);
+}
+
+async function poll() {
+  try {
+    // Status
+    const sRes = await fetch('/api/session/status');
+    const sData = await sRes.json();
+    updateStatus(sData.status, sData.status_msg, sData.instance_id, sData.cwd);
+
+    // Log entries since last poll
+    const lRes = await fetch(`/api/session/log?since=${lastLogTs}`);
+    const entries = await lRes.json();
+    for (const e of entries) {
+      appendLog(e.type, e.text);
+      lastLogTs = Math.max(lastLogTs, e.ts);
+    }
+  } catch (_) { /* server busy */ }
+}
+
+// ─── Status / UI ─────────────────────────────────────────────────────────────
+
+function updateStatus(status, msg, iid, cwd) {
+  if (status === sessionStatus && !msg) return;
+  sessionStatus = status;
+
+  const badge = document.getElementById('status-badge');
+  badge.className = `badge-${status}`;
+  badge.textContent = status.toUpperCase();
+
+  const msgEl = document.getElementById('status-msg');
+  msgEl.textContent = msg || (iid ? `instance: ${iid}` : 'No active session');
+
+  // Show cwd in the prompt label, falling back to instance id
+  const promptLabel = document.getElementById('prompt-label');
+  if (cwd && status === 'ready') {
+    promptLabel.textContent = `${cwd} $`;
+  } else if (iid) {
+    promptLabel.textContent = `${iid} $`;
+  } else {
+    promptLabel.textContent = '$';
+  }
+
+  updateButtons();
+
+  if (!isRunning) {
+    const ready = status === 'ready';
+    document.getElementById('cmd-input').disabled = !ready;
+    document.getElementById('btn-exec').disabled  = !ready;
+    if (ready) document.getElementById('cmd-input').focus();
+  }
+}
+
+function updateButtons() {
+  const canStart = !!selectedInstance && sessionStatus !== 'ready' && sessionStatus !== 'starting';
+  const canStop  = sessionStatus === 'ready' || sessionStatus === 'starting';
+  document.getElementById('btn-start').disabled = !canStart;
+  document.getElementById('btn-stop').disabled  = !canStop;
+}
+
+// ─── Terminal output ──────────────────────────────────────────────────────────
+
+function appendLog(type, text) {
+  const term = document.getElementById('terminal');
+  const div = document.createElement('div');
+  div.className = `log-${type}`;
+
+  // For system lines that look like commands, special color
+  if (type === 'system' && text.startsWith('$ ')) {
+    div.className = 'log-system prompt';
+  }
+
+  // Convert newlines, preserve whitespace
+  div.style.whiteSpace = 'pre-wrap';
+  div.style.wordBreak = 'break-all';
+  div.textContent = text;
+
+  term.appendChild(div);
+
+  // Auto-scroll if near bottom
+  const atBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 80;
+  if (atBottom) term.scrollTop = term.scrollHeight;
+
+  return div;
+}
+
+function clearTerminal() {
+  document.getElementById('terminal').innerHTML = '';
+  lastLogTs = Date.now() / 1000;
+}
+
+// ─── Resize handle ────────────────────────────────────────────────────────────
+
+function setupResize() {
+  const handle = document.getElementById('resize-handle');
+  const left   = document.getElementById('left');
+  let dragging = false;
+  let startX, startW;
+
+  handle.addEventListener('mousedown', e => {
+    dragging = true;
+    startX = e.clientX;
+    startW = left.offsetWidth;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.max(180, Math.min(560, startW + e.clientX - startX));
+    left.style.width = w + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    dragging = false;
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  });
+}
+
+// ─── Util ─────────────────────────────────────────────────────────────────────
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>

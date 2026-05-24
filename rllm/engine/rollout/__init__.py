@@ -6,6 +6,7 @@ __all__ = [
     "RolloutEngine",
     "OpenAIEngine",
     "VerlEngine",
+    "VerlAlignedEngine",
 ]
 
 
@@ -21,4 +22,8 @@ def __getattr__(name):
             return _VerlEngine
         except Exception:
             raise AttributeError(name) from None
+    if name == "VerlAlignedEngine":
+        from .verl_aligned_engine import VerlAlignedEngine as _VerlAlignedEngine
+
+        return _VerlAlignedEngine
     raise AttributeError(name)
